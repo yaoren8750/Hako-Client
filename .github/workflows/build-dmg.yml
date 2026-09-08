@@ -1,0 +1,277 @@
+name: Build HakoMac DMG
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build HakoMac
+    runs-on: macos-15
+
+    steps:
+      # --------------------------------------------------
+      # 1. Checkout
+      # --------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # --------------------------------------------------
+      # 2. Show environment
+      # --------------------------------------------------
+      - name: Show build environment
+        run: |
+          set -e
+
+          echo "=== macOS ==="
+          sw_vers
+
+          echo "=== Xcode ==="
+          xcodebuild -version
+
+          echo "=== Swift ==="
+          swift --version
+
+          echo "=== Python ==="
+          python3 --version
+
+          echo "=== Git ==="
+          git --version
+
+          echo "=== Go ==="
+          go version || true
+
+      # --------------------------------------------------
+      # 3. Install XcodeGen
+      # --------------------------------------------------
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+
+          xcodegen version
+
+      # --------------------------------------------------
+      # 4. Python environment
+      # --------------------------------------------------
+      - name: Setup Python
+        run: |
+          set -e
+
+          python3 -m venv .build/python-env
+
+          source .build/python-env/bin/activate
+
+          python3 -m pip install --upgrade pip
+          python3 -m pip install PyYAML
+
+          python3 --version
+          pip show PyYAML
+
+      # --------------------------------------------------
+      # 5. Bootstrap dependencies
+      # --------------------------------------------------
+      - name: Bootstrap dependencies
+        shell: bash
+        run: |
+          set -e
+
+          source .build/python-env/bin/activate
+
+          python3 scripts/bootstrap.py
+
+      # --------------------------------------------------
+      # 6. Generate Xcode project
+      # --------------------------------------------------
+      - name: Configure project
+        shell: bash
+        run: |
+          set -e
+
+          source .build/python-env/bin/activate
+
+          python3 scripts/configure.py
+
+      # --------------------------------------------------
+      # 7. Verify generated project
+      # --------------------------------------------------
+      - name: Verify Xcode project
+        run: |
+          set -e
+
+          PROJECT="apple/HakoClient/HakoClient.xcodeproj"
+
+          if [ ! -d "$PROJECT" ]; then
+            echo "ERROR: Xcode project not found:"
+            echo "$PROJECT"
+            exit 1
+          fi
+
+          echo "Project:"
+          echo "$PROJECT"
+
+          echo
+          echo "Available schemes:"
+          xcodebuild \
+            -project "$PROJECT" \
+            -list
+
+      # --------------------------------------------------
+      # 8. Build macOS
+      # --------------------------------------------------
+      - name: Build HakoMac
+        shell: bash
+        run: |
+          set -e
+
+          PROJECT="apple/HakoClient/HakoClient.xcodeproj"
+
+          rm -rf build
+
+          mkdir -p build
+
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme HakoMac \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      # --------------------------------------------------
+      # 9. Locate HakoMac.app
+      # --------------------------------------------------
+      - name: Locate HakoMac.app
+        shell: bash
+        run: |
+          set -e
+
+          APP_PATH=$(find \
+            build/DerivedData/Build/Products \
+            -type d \
+            -name "HakoMac.app" \
+            -print \
+            | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: HakoMac.app not found."
+
+            echo
+            echo "Build products:"
+            find build/DerivedData/Build/Products \
+              -maxdepth 4 \
+              -print
+
+            exit 1
+          fi
+
+          echo "Found app:"
+          echo "$APP_PATH"
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      # --------------------------------------------------
+      # 10. Read app version
+      # --------------------------------------------------
+      - name: Read app version
+        shell: bash
+        run: |
+          set -e
+
+          VERSION=$(
+            /usr/libexec/PlistBuddy \
+              -c "Print :CFBundleShortVersionString" \
+              "$APP_PATH/Contents/Info.plist" \
+              2>/dev/null || echo "dev"
+          )
+
+          BUILD_NUMBER=$(
+            /usr/libexec/PlistBuddy \
+              -c "Print :CFBundleVersion" \
+              "$APP_PATH/Contents/Info.plist" \
+              2>/dev/null || echo "0"
+          )
+
+          echo "Version: $VERSION"
+          echo "Build:   $BUILD_NUMBER"
+
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+
+      # --------------------------------------------------
+      # 11. Prepare DMG
+      # --------------------------------------------------
+      - name: Prepare DMG
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf build/dmg
+
+          mkdir -p build/dmg
+
+          cp -R "$APP_PATH" \
+            "build/dmg/HakoMac.app"
+
+          ln -s \
+            /Applications \
+            "build/dmg/Applications"
+
+      # --------------------------------------------------
+      # 12. Create DMG
+      # --------------------------------------------------
+      - name: Create DMG
+        shell: bash
+        run: |
+          set -e
+
+          DMG_NAME="HakoMac-${APP_VERSION}-${BUILD_NUMBER}.dmg"
+
+          hdiutil create \
+            -volname "HakoMac" \
+            -srcfolder build/dmg \
+            -ov \
+            -format UDZO \
+            "build/$DMG_NAME"
+
+          echo "DMG_PATH=build/$DMG_NAME" >> "$GITHUB_ENV"
+
+          echo
+          echo "DMG created:"
+          ls -lh "build/$DMG_NAME"
+
+      # --------------------------------------------------
+      # 13. SHA256
+      # --------------------------------------------------
+      - name: Generate SHA256
+        shell: bash
+        run: |
+          set -e
+
+          shasum -a 256 \
+            "$DMG_PATH" \
+            > "$DMG_PATH.sha256"
+
+          cat "$DMG_PATH.sha256"
+
+      # --------------------------------------------------
+      # 14. Upload artifact
+      # --------------------------------------------------
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: HakoMac-${{ env.APP_VERSION }}-${{ env.BUILD_NUMBER }}
+          path: |
+            ${{ env.DMG_PATH }}
+            ${{ env.DMG_PATH }}.sha256
+          if-no-files-found: error
+          retention-days: 30
