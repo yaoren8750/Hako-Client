@@ -243,12 +243,16 @@ final class ExtensionProvider: NSObject {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard let self else { return }
             let planned: NEPacketTunnelNetworkSettings? = withStateLock {
-                guard ipv6ReapplySequence == sequence,
-                      let current = networkSettings,
-                      let offered = tunnelIPv6Settings,
+                guard self.ipv6ReapplySequence == sequence,
+                      let current = self.networkSettings,
+                      let offered = self.tunnelIPv6Settings,
                       (current.ipv6Settings != nil) != supportsIPv6
                 else { return nil }
-                guard let copy = current.copy() as? NEPacketTunnelNetworkSettings else { return nil }
+
+                guard let copy = current.copy() as? NEPacketTunnelNetworkSettings else {
+                    return nil
+                }
+
                 copy.ipv6Settings = supportsIPv6 ? offered : nil
                 return copy
             }
@@ -1430,9 +1434,7 @@ extension ExtensionProvider: HakoPlatformInterfaceProtocol {
         let dns = NEDNSSettings(servers: [server])
         dns.matchDomains = [""]
         dns.matchDomainsNoSearch = true
-        if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
-            dns.allowFailover = false
-        }
+
         return dns
     }
 
