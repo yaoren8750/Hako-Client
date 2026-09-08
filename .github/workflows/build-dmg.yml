@@ -1,4 +1,4 @@
-     name: Build HakoMac DMG
+name: Build HakoMac DMG
 
 on:
   workflow_dispatch:
@@ -515,4 +515,4 @@ jobs:
             ${{ env.DMG_PATH }}
             ${{ env.DMG_PATH }}.sha256
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 30: 
