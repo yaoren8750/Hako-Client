@@ -2,7 +2,6 @@ name: Build HakoMac DMG
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - main
@@ -16,104 +15,38 @@ jobs:
     runs-on: macos-15
 
     steps:
-
-      # ==================================================
-      # 1. Checkout
-      # ==================================================
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-
-      # ==================================================
-      # 2. Show system information
-      # ==================================================
-      - name: Show build environment
-        shell: bash
+      - name: Show environment
         run: |
-          set -e
-
-          echo "======================================"
-          echo "System"
-          echo "======================================"
-
           sw_vers
-
-          echo
-          echo "======================================"
-          echo "Xcode"
-          echo "======================================"
-
+          echo "Xcode:"
           xcodebuild -version
-
-          echo
-          echo "======================================"
-          echo "Swift"
-          echo "======================================"
-
+          echo "Swift:"
           swift --version
-
-          echo
-          echo "======================================"
-          echo "Python"
-          echo "======================================"
-
+          echo "Python:"
           python3 --version
 
-          echo
-          echo "======================================"
-          echo "Git"
-          echo "======================================"
-
-          git --version
-
-
-      # ==================================================
-      # 3. Setup Go
-      # ==================================================
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: stable
           cache: false
 
-
-      # ==================================================
-      # 4. Verify Go
-      # ==================================================
       - name: Verify Go
-        shell: bash
         run: |
-          set -e
-
-          echo "Go path:"
           which go
-
-          echo
-          echo "Go version:"
           go version
 
-
-      # ==================================================
-      # 5. Install XcodeGen
-      # ==================================================
       - name: Install XcodeGen
-        shell: bash
         run: |
-          set -e
-
           brew install xcodegen
-
-          echo
-          echo "XcodeGen version:"
           xcodegen version
 
-
-      # ==================================================
-      # 6. Setup Python
-      # ==================================================
-      - name: Setup Python environment
+      - name: Setup Python
         shell: bash
         run: |
           set -e
@@ -125,21 +58,11 @@ jobs:
           source .build/python-env/bin/activate
 
           python3 -m pip install --upgrade pip
-
           python3 -m pip install PyYAML
 
-          echo
-          echo "Python:"
           python3 --version
-
-          echo
-          echo "PyYAML:"
           python3 -m pip show PyYAML
 
-
-      # ==================================================
-      # 7. Bootstrap dependencies
-      # ==================================================
       - name: Bootstrap dependencies
         shell: bash
         run: |
@@ -147,16 +70,8 @@ jobs:
 
           source .build/python-env/bin/activate
 
-          echo "======================================"
-          echo "Running bootstrap.py"
-          echo "======================================"
-
           python3 scripts/bootstrap.py
 
-
-      # ==================================================
-      # 8. Configure project
-      # ==================================================
       - name: Configure project
         shell: bash
         run: |
@@ -164,16 +79,8 @@ jobs:
 
           source .build/python-env/bin/activate
 
-          echo "======================================"
-          echo "Running configure.py"
-          echo "======================================"
-
           python3 scripts/configure.py
 
-
-      # ==================================================
-      # 9. Verify Xcode project
-      # ==================================================
       - name: Verify Xcode project
         shell: bash
         run: |
@@ -181,39 +88,25 @@ jobs:
 
           PROJECT="apple/HakoClient/HakoClient.xcodeproj"
 
-          echo "======================================"
-          echo "Checking Xcode project"
-          echo "======================================"
-
           if [ ! -d "$PROJECT" ]; then
-            echo
             echo "ERROR: Xcode project not found:"
             echo "$PROJECT"
-            echo
-            echo "Available Xcode projects:"
-            find . \
-              -name "*.xcodeproj" \
-              -type d \
-              -print
-
+            echo ""
+            echo "Available projects:"
+            find . -name "*.xcodeproj" -type d -print
             exit 1
           fi
 
-          echo
           echo "Project:"
           echo "$PROJECT"
 
-          echo
+          echo ""
           echo "Available schemes:"
 
           xcodebuild \
             -project "$PROJECT" \
             -list
 
-
-      # ==================================================
-      # 10. Build HakoMac
-      # ==================================================
       - name: Build HakoMac
         shell: bash
         run: |
@@ -222,7 +115,6 @@ jobs:
           PROJECT="apple/HakoClient/HakoClient.xcodeproj"
 
           rm -rf build
-
           mkdir -p build
 
           echo "======================================"
@@ -242,14 +134,11 @@ jobs:
 
           BUILD_RESULT=${PIPESTATUS[0]}
 
-          echo
-          echo "======================================"
+          echo ""
           echo "Xcode build exit code: $BUILD_RESULT"
-          echo "======================================"
 
           if [ "$BUILD_RESULT" -ne 0 ]; then
-
-            echo
+            echo ""
             echo "======================================"
             echo "XCODE ERRORS"
             echo "======================================"
@@ -257,10 +146,9 @@ jobs:
             grep -nE \
               '(^|[[:space:]])error:|SwiftCompile failed|CompileSwift|Ld .* failed|CodeSign .* failed|Undefined symbols|No such module' \
               build/xcodebuild.log \
-              | tail -n 100 \
-              || true
+              | tail -n 100 || true
 
-            echo
+            echo ""
             echo "======================================"
             echo "LAST 200 LOG LINES"
             echo "======================================"
@@ -270,32 +158,19 @@ jobs:
             exit "$BUILD_RESULT"
           fi
 
-
-      # ==================================================
-      # 11. Upload Xcode log even if build fails
-      # ==================================================
       - name: Upload Xcode build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: HakoMac-Xcode-Build-Log
-          path: |
-            build/xcodebuild.log
+          path: build/xcodebuild.log
           if-no-files-found: ignore
           retention-days: 14
 
-
-      # ==================================================
-      # 12. Locate HakoMac.app
-      # ==================================================
       - name: Locate HakoMac.app
         shell: bash
         run: |
           set -e
-
-          echo "======================================"
-          echo "Searching for HakoMac.app"
-          echo "======================================"
 
           APP_PATH=$(find \
             build/DerivedData/Build/Products \
@@ -305,11 +180,9 @@ jobs:
             | head -n 1)
 
           if [ -z "$APP_PATH" ]; then
-
-            echo
             echo "ERROR: HakoMac.app not found."
 
-            echo
+            echo ""
             echo "Build products:"
             find \
               build/DerivedData/Build/Products \
@@ -319,59 +192,12 @@ jobs:
             exit 1
           fi
 
-          echo
-          echo "HakoMac.app found:"
+          echo "Found:"
           echo "$APP_PATH"
 
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
-
-      # ==================================================
-      # 13. Inspect application
-      # ==================================================
-      - name: Inspect application
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "Application information"
-          echo "======================================"
-
-          ls -lah "$APP_PATH"
-
-          echo
-          echo "Bundle identifier:"
-
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleIdentifier" \
-            "$APP_PATH/Contents/Info.plist" \
-            2>/dev/null \
-            || true
-
-          echo
-          echo "Version:"
-
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleShortVersionString" \
-            "$APP_PATH/Contents/Info.plist" \
-            2>/dev/null \
-            || true
-
-          echo
-          echo "Build:"
-
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleVersion" \
-            "$APP_PATH/Contents/Info.plist" \
-            2>/dev/null \
-            || true
-
-
-      # ==================================================
-      # 14. Read application version
-      # ==================================================
-      - name: Read application version
+      - name: Read app version
         shell: bash
         run: |
           set -e
@@ -380,58 +206,42 @@ jobs:
             /usr/libexec/PlistBuddy \
               -c "Print :CFBundleShortVersionString" \
               "$APP_PATH/Contents/Info.plist" \
-              2>/dev/null \
-              || echo "dev"
+              2>/dev/null || echo "dev"
           )
 
           BUILD_NUMBER=$(
             /usr/libexec/PlistBuddy \
               -c "Print :CFBundleVersion" \
               "$APP_PATH/Contents/Info.plist" \
-              2>/dev/null \
-              || echo "0"
+              2>/dev/null || echo "0"
           )
 
-          echo "Application version: $VERSION"
-          echo "Build number: $BUILD_NUMBER"
+          echo "Version: $VERSION"
+          echo "Build: $BUILD_NUMBER"
 
           echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
 
-
-      # ==================================================
-      # 15. Prepare DMG
-      # ==================================================
       - name: Prepare DMG
         shell: bash
         run: |
           set -e
 
           rm -rf build/dmg
-
           mkdir -p build/dmg
-
-          echo "Copying HakoMac.app..."
 
           cp -R \
             "$APP_PATH" \
             "build/dmg/HakoMac.app"
 
-          echo "Creating Applications shortcut..."
-
           ln -s \
             /Applications \
             "build/dmg/Applications"
 
-          echo
+          echo ""
           echo "DMG contents:"
-
           ls -lah build/dmg
 
-
-      # ==================================================
-      # 16. Create DMG
-      # ==================================================
       - name: Create DMG
         shell: bash
         run: |
@@ -439,9 +249,8 @@ jobs:
 
           DMG_NAME="HakoMac-${APP_VERSION}-${BUILD_NUMBER}.dmg"
 
-          echo "======================================"
-          echo "Creating DMG"
-          echo "======================================"
+          echo "Creating:"
+          echo "$DMG_NAME"
 
           hdiutil create \
             -volname "HakoMac" \
@@ -451,41 +260,24 @@ jobs:
             "build/$DMG_NAME"
 
           if [ ! -f "build/$DMG_NAME" ]; then
-            echo
             echo "ERROR: DMG was not created."
             exit 1
           fi
-
-          echo
-          echo "DMG created successfully:"
 
           ls -lh "build/$DMG_NAME"
 
           echo "DMG_PATH=build/$DMG_NAME" >> "$GITHUB_ENV"
 
-
-      # ==================================================
-      # 17. Verify DMG
-      # ==================================================
       - name: Verify DMG
-        shell: bash
         run: |
           set -e
 
-          echo "======================================"
-          echo "Verifying DMG"
-          echo "======================================"
-
           hdiutil imageinfo "$DMG_PATH"
 
-          echo
+          echo ""
           echo "DMG:"
           ls -lh "$DMG_PATH"
 
-
-      # ==================================================
-      # 18. Generate SHA256
-      # ==================================================
       - name: Generate SHA256
         shell: bash
         run: |
@@ -497,16 +289,10 @@ jobs:
             "$DMG_PATH" \
             > "$SHA_FILE"
 
-          echo "======================================"
-          echo "SHA256"
-          echo "======================================"
-
+          echo ""
+          echo "SHA256:"
           cat "$SHA_FILE"
 
-
-      # ==================================================
-      # 19. Upload final DMG
-      # ==================================================
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
@@ -515,4 +301,4 @@ jobs:
             ${{ env.DMG_PATH }}
             ${{ env.DMG_PATH }}.sha256
           if-no-files-found: error
-          retention-days: 30: 
+          retention-days: 30
