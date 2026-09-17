@@ -1,0 +1,119 @@
+```yaml
+name: Build Hako iOS TIPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-tipa:
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
+          swift --version
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+
+      - name: Create Python environment
+        run: |
+          python3 -m venv .build/python-env
+          source .build/python-env/bin/activate
+          python3 -m pip install --upgrade pip
+          python3 -m pip install PyYAML
+
+      - name: Bootstrap dependencies
+        run: |
+          source .build/python-env/bin/activate
+          python3 scripts/bootstrap.py
+
+      - name: Configure Xcode project
+        run: |
+          source .build/python-env/bin/activate
+          python3 scripts/configure.py
+
+      - name: Show schemes
+        run: |
+          xcodebuild \
+            -project apple/HakoClient/HakoClient.xcodeproj \
+            -list
+
+      - name: Build iOS
+        run: |
+          rm -rf .build/HakoIOSBuild
+
+          xcodebuild \
+            -project apple/HakoClient/HakoClient.xcodeproj \
+            -scheme Hako \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath .build/HakoIOSBuild \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Find iOS app
+        run: |
+          echo "Searching for .app..."
+
+          find .build/HakoIOSBuild \
+            -type d \
+            -name "*.app" \
+            -print
+
+      - name: Package TIPA
+        run: |
+          set -e
+
+          APP_PATH=$(find .build/HakoIOSBuild \
+            -type d \
+            -path "*/Build/Products/Release-iphoneos/*.app" \
+            | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: iOS .app not found"
+            exit 1
+          fi
+
+          echo "Found app:"
+          echo "$APP_PATH"
+
+          rm -rf .build/tipa
+          mkdir -p .build/tipa/Payload
+
+          cp -R "$APP_PATH" .build/tipa/Payload/
+
+          cd .build/tipa
+
+          zip -r ../Hako.ipa Payload
+
+          mv ../Hako.ipa ../Hako.tipa
+
+          echo "TIPA created:"
+          ls -lh ../Hako.tipa
+
+      - name: Upload TIPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hako-iOS-TIPA
+          path: .build/Hako.tipa
+          if-no-files-found: error
+```
