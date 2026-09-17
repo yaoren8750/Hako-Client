@@ -1,164 +1,106 @@
-```swift
 import CloudKit
 import Foundation
 
-public final class CloudKitBackupRecordSource: BackupRecordSource, @unchecked Sendable {
-
-    private let containerIdentifier: String
+ 
+ 
+ 
+public final class CloudKitBackupRecordSink: BackupRecordSink, @unchecked Sendable {
+    private let container: CKContainer
+     
+     
+    public var diagnostics: (@Sendable (String) -> Void)?
 
     public init(containerIdentifier: String) {
-        // Do NOT create CKContainer here.
-        //
-        // On macOS, creating CKContainer during application startup can
-        // trigger CloudKit initialization before the application is ready.
-        // Keep only the identifier and create the container when a real
-        // iCloud operation is requested.
-        self.containerIdentifier = containerIdentifier
+        container = CKContainer(identifier: containerIdentifier)
     }
 
-    private func makeContainer() -> CKContainer {
-        CKContainer(identifier: containerIdentifier)
-    }
-
-    public func listBackups() async throws -> [BackupRecordSummary] {
-        let container = makeContainer()
-
-        let status: CKAccountStatus
-        do {
-            status = try await container.accountStatus()
-        } catch {
-            throw BackupRecordSourceError.unavailable(error.localizedDescription)
+    public func upsert(_ payload: BackupRecordPayload) async throws {
+        try await requireAccount()
+        if let diagnostics {
+             
+             
+             
+            let user = (try? await container.userRecordID().recordName) ?? "unavailable"
+            diagnostics("icloud auto backup: user record \(user), container \(container.containerIdentifier)")
         }
-
-        switch status {
-        case .available:
-            break
-
-        case .noAccount:
-            throw BackupRecordSourceError.noAccount
-
-        default:
-            throw BackupRecordSourceError.unavailable(
-                "iCloud account status: \(Self.name(of: status))"
-            )
-        }
-
-        let predicate = NSPredicate(
-            format: "%K == %@",
-            BackupRecordSchema.kindField,
-            BackupRecordSchema.kindAuto
-        )
-
-        let query = CKQuery(
-            recordType: BackupRecordSchema.recordType,
-            predicate: predicate
-        )
-
+         
+         
+        let assetURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hako-backup-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: assetURL) }
         do {
-            let (matches, _) = try await container.privateCloudDatabase.records(
-                matching: query,
-                desiredKeys: BackupRecordSchema.summaryKeys,
-                resultsLimit: 50
+            try payload.archive.write(to: assetURL, options: .atomic)
+            let record = Self.record(for: payload, assetURL: assetURL)
+            _ = try await container.privateCloudDatabase.modifyRecords(
+                saving: [record], deleting: [], savePolicy: .allKeys, atomically: true
             )
-
-            let summaries = matches.compactMap {
-                _, result -> BackupRecordSummary? in
-
-                guard case .success(let record) = result else {
-                    return nil
-                }
-
-                return Self.summary(from: record)
-            }
-
-            return summaries.sorted {
-                ($0.exportedAt ?? .distantPast) >
-                ($1.exportedAt ?? .distantPast)
-            }
-
+        } catch let error as BackupRecordSinkError {
+            throw error
         } catch {
             throw Self.mapped(error)
         }
     }
 
-    public func fetchArchive(installID: String) async throws -> Data {
-        let container = makeContainer()
-
-        let record: CKRecord
-
+    public func deleteOwn(installID: String) async throws {
+        try await requireAccount()
         do {
-            record = try await container.privateCloudDatabase.record(
-                for: CKRecord.ID(recordName: installID)
+            _ = try await container.privateCloudDatabase.modifyRecords(
+                saving: [], deleting: [CKRecord.ID(recordName: installID)], savePolicy: .allKeys, atomically: true
             )
         } catch {
-            throw Self.mapped(error, notFound: installID)
-        }
-
-        guard
-            let asset = record[BackupRecordSchema.archiveField] as? CKAsset,
-            let url = asset.fileURL,
-            let data = try? Data(contentsOf: url)
-        else {
-            throw BackupRecordSourceError.notFound(installID)
-        }
-
-        return data
-    }
-
-    public static func name(of status: CKAccountStatus) -> String {
-        switch status {
-        case .available:
-            return "available"
-
-        case .noAccount:
-            return "noAccount"
-
-        case .restricted:
-            return "restricted"
-
-        case .couldNotDetermine:
-            return "couldNotDetermine"
-
-        case .temporarilyUnavailable:
-            return "temporarilyUnavailable"
-
-        @unknown default:
-            return "unknown(\(status.rawValue))"
+            if let ck = error as? CKError, ck.code == .unknownItem { return }
+            throw Self.mapped(error)
         }
     }
 
-    public static func summary(from record: CKRecord) -> BackupRecordSummary {
-        BackupRecordSummary(
-            installID: record.recordID.recordName,
-            sourceDevice: record[
-                BackupRecordSchema.sourceDeviceField
-            ] as? String,
-            exportedAt: record[
-                BackupRecordSchema.exportedAtField
-            ] as? Date
+     
+     
+     
+    public static func record(for payload: BackupRecordPayload, assetURL: URL) -> CKRecord {
+        let record = CKRecord(
+            recordType: BackupRecordSchema.recordType,
+            recordID: CKRecord.ID(recordName: payload.installID)
         )
+        record[BackupRecordSchema.kindField] = BackupRecordSchema.kindAuto as NSString
+        record[BackupRecordSchema.archiveField] = CKAsset(fileURL: assetURL)
+        record[BackupRecordSchema.exportedAtField] = payload.exportedAt as NSDate
+        record[BackupRecordSchema.sourceDeviceField] = payload.sourceDevice as NSString
+        record[BackupRecordSchema.sourceInstallIDField] = payload.installID as NSString
+        record[BackupRecordSchema.schemaVersionField] = payload.schemaVersion as NSNumber
+        return record
     }
 
-    private static func mapped(
-        _ error: Error,
-        notFound installID: String? = nil
-    ) -> BackupRecordSourceError {
-
-        if let ck = error as? CKError {
-            switch ck.code {
-
-            case .notAuthenticated:
-                return .noAccount
-
-            case .unknownItem:
-                return .notFound(installID ?? "")
-
-            default:
-                break
-            }
+    private func requireAccount() async throws {
+        let status: CKAccountStatus
+        do {
+            status = try await container.accountStatus()
+        } catch {
+            throw BackupRecordSinkError.unavailable(error.localizedDescription)
         }
+        switch status {
+        case .available: return
+        case .noAccount: throw BackupRecordSinkError.noAccount
+        default:
+            throw BackupRecordSinkError.unavailable(
+                "iCloud account status: \(CloudKitBackupRecordSource.name(of: status))"
+            )
+        }
+    }
 
-        return .unavailable(error.localizedDescription)
+     
+    public static func mapped(_ error: Error) -> BackupRecordSinkError {
+        guard let ck = error as? CKError else { return .unavailable(error.localizedDescription) }
+        switch ck.code {
+        case .notAuthenticated:
+            return .noAccount
+        case .networkUnavailable, .networkFailure, .serviceUnavailable:
+            return .offline(ck.localizedDescription)
+        case .quotaExceeded:
+            return .quotaExceeded
+        case .requestRateLimited, .zoneBusy:
+            return .rateLimited(retryAfterSeconds: ck.retryAfterSeconds ?? 30)
+        default:
+            return .unavailable(ck.localizedDescription)
+        }
     }
 }
-```
