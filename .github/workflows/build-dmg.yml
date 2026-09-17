@@ -1,0 +1,147 @@
+name: Build HakoMac DMG
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build HakoMac
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show build environment
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          xcrun swift --version
+          go version || true
+          xcodegen version || true
+
+      - name: Select Xcode
+        run: |
+          echo "Installed Xcodes:"
+          ls -la /Applications | grep -i Xcode || true
+
+          if [ -d "/Applications/Xcode_26.6.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app
+          elif [ -d "/Applications/Xcode.app" ]; then
+            sudo xcode-select -s /Applications/Xcode.app
+          else
+            echo "ERROR: Xcode 26.6 was not found."
+            exit 1
+          fi
+
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+
+      - name: Install XcodeGen
+        run: |
+          brew update
+          brew install xcodegen
+
+      - name: Prepare Python environment
+        run: |
+          python3 -m venv .build/python-env
+          source .build/python-env/bin/activate
+          python3 -m pip install --upgrade pip
+          python3 -m pip install PyYAML
+
+      - name: Bootstrap dependencies
+        run: |
+          source .build/python-env/bin/activate
+          python3 scripts/bootstrap.py
+
+      - name: Configure project
+        run: |
+          source .build/python-env/bin/activate
+          python3 scripts/configure.py
+
+      - name: Show generated schemes
+        run: |
+          xcodebuild \
+            -list \
+            -project apple/HakoClient/HakoClient.xcodeproj
+
+      - name: Build HakoMac
+        run: |
+          rm -rf .build/HakoMacBuild
+
+          xcodebuild \
+            -project apple/HakoClient/HakoClient.xcodeproj \
+            -scheme HakoMac \
+            -configuration Release \
+            -derivedDataPath .build/HakoMacBuild \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Locate HakoMac.app
+        run: |
+          echo "=== Applications ==="
+          find .build/HakoMacBuild \
+            -type d \
+            -name "*.app" \
+            -print
+
+          echo "=== Release directory ==="
+          ls -lah .build/HakoMacBuild/Build/Products/Release || true
+
+      - name: Create DMG
+        run: |
+          set -e
+
+          APP_PATH="$(find \
+            .build/HakoMacBuild/Build/Products/Release \
+            -maxdepth 1 \
+            -type d \
+            -name "*.app" \
+            -print -quit)"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: No macOS .app was produced."
+            exit 1
+          fi
+
+          echo "Using app:"
+          echo "$APP_PATH"
+
+          rm -rf .build/dmg
+          mkdir -p .build/dmg
+
+          hdiutil create \
+            -volname "Hako" \
+            -srcfolder "$APP_PATH" \
+            -ov \
+            -format UDZO \
+            ".build/dmg/Hako.dmg"
+
+      - name: Verify DMG
+        run: |
+          set -e
+
+          ls -lh .build/dmg/Hako.dmg
+          file .build/dmg/Hako.dmg
+
+          hdiutil imageinfo .build/dmg/Hako.dmg | head -50
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: HakoMac-DMG
+          path: .build/dmg/Hako.dmg
+          if-no-files-found: error
