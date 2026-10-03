@@ -134,6 +134,17 @@ struct RuntimeRouteContext: Equatable, Sendable {
     }
 }
 
+ 
+ 
+enum ControlConnectFailureLogGate {
+    static let repeatInterval: TimeInterval = 60
+    static func shouldLog(_ message: String, after last: (message: String, at: Date)?, now: Date) -> Bool {
+        guard let last else { return true }
+        if last.message != message { return true }
+        return now.timeIntervalSince(last.at) >= repeatInterval
+    }
+}
+
 struct RuntimeRouteEvidence: Codable, Equatable, Sendable {
     enum Kind: String, Codable, Sendable {
         case runtimeControlConnected = "runtime-control-connected"
@@ -429,6 +440,17 @@ enum NativeProviderSideUpdateDispatcher {
 @MainActor
 final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
     @Published private(set) var isConnected = false
+     
+     
+     
+     
+     
+    @Published private(set) var tunnelIsUp = false
+     
+     
+     
+     
+    @Published private(set) var channelAttachFailed = false
     @Published private(set) var lastError = ""
     @Published private(set) var traffic = ClashTrafficSnapshot() {
         didSet { HakoPerf.count("pub.cmd.traffic") }
@@ -490,7 +512,19 @@ final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
     private static let logBatchNanoseconds: UInt64 = 100_000_000
 
     private var client: HakoClashAPIClient?
-    private var providerSession: NETunnelProviderSession?
+     
+     
+    private var boundSession: NETunnelProviderSession?
+     
+     
+     
+     
+     
+    private var sessionProvider: (() -> NETunnelProviderSession?)?
+    private var providerSession: NETunnelProviderSession? { sessionProvider?() ?? boundSession }
+     
+     
+    private var lastConnectFailureLog: (message: String, at: Date)?
     private var clientHandler: HandlerProxy?
     private var connectTask: Task<Void, Never>?
     private var nativeConnectTask: Task<Void, Never>?
@@ -508,7 +542,24 @@ final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
     private var diagnosticPublication: HakoRuntimeDiagnostics?
     private var publishingDiagnostics = false
     private var logBatchTask: Task<Void, Never>?
-    private var pendingLogs: [String] = []
+     
+     
+     
+     
+     
+     
+     
+    private var logDisplayLevel = HakoLogSettings.liveStreamLevel(
+        from: GlobalConfig.appGroupDefaults
+    )
+     
+     
+     
+     
+     
+    private var subscribedLogLevel = "info"
+    private var activeProfileLogLevelObserver: NSObjectProtocol?
+    private var pendingLogs = HakoLogBuffer(maximumBytes: 256 * 1024, maximumCount: 1000)
     private var trafficReducer = ClashTrafficReducer()
     private let connectionRuntimeFeed: ConnectionRuntimeFeed
     private var routeEvidenceJournal: RuntimeRouteEvidenceJournal { connectionRuntimeFeed.routeJournal }
@@ -523,6 +574,9 @@ final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
 
 
     deinit {
+        if let activeProfileLogLevelObserver {
+            NotificationCenter.default.removeObserver(activeProfileLogLevelObserver)
+        }
         connectTask?.cancel()
         logBatchTask?.cancel()
         scheduledDiagnosticsTask?.cancel()
@@ -559,6 +613,7 @@ final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
         servesProxyShareFixture ? true : client != nil
     }
 
+    private let logRecordingEnabled: @Sendable () -> Bool
     private let memoryNow: @Sendable () -> UInt64
     private let enqueueMemory: ClashMemoryDelivery
 
@@ -566,6 +621,9 @@ final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
         connectionRuntimeFeed: ConnectionRuntimeFeed? = nil,
         sceneManagedDiagnostics: Bool? = nil,
         runtimeDiagnosticsReader: (() async throws -> HakoRuntimeDiagnostics)? = nil,
+        logRecordingEnabled: @escaping @Sendable () -> Bool = {
+            HakoLogStore.defaultSettings().map { HakoLogSettings.isRecording(from: $0) } ?? false
+        },
         memoryNow: @escaping @Sendable () -> UInt64 = ClashMemoryClock.now,
         enqueueMemory: @escaping ClashMemoryDelivery = { action in
             Task { @MainActor in action() }
@@ -578,22 +636,47 @@ final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
         self.sceneManagedDiagnostics = sceneManagedDiagnostics ?? false
 #endif
         self.runtimeDiagnosticsReader = runtimeDiagnosticsReader
+        self.logRecordingEnabled = logRecordingEnabled
         self.memoryNow = memoryNow
         self.enqueueMemory = enqueueMemory
+         
+         
+         
+        activeProfileLogLevelObserver = NotificationCenter.default.addObserver(
+            forName: HakoLogSettings.activeProfileLogLevelDidChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshLogDisplayLevel() }
+        }
 return 
 
     }
 
+    private func startUITestLogStreamIfRequested() {}
+
+
 
 
     func bind(session: NETunnelProviderSession?) {
-        providerSession = session
+        boundSession = session
+        if wantsConnection { connectIfNeeded() }
+    }
+
+     
+     
+     
+     
+    func bind(sessionProvider: @escaping () -> NETunnelProviderSession?) {
+        self.sessionProvider = sessionProvider
         if wantsConnection { connectIfNeeded() }
     }
 
     func sync(vpnStatus: String) {
         let normalized = vpnStatus.lowercased()
         let shouldConnect = normalized == "connected" || normalized == "reasserting"
+         
+        if tunnelIsUp != shouldConnect { tunnelIsUp = shouldConnect }
         if shouldConnect {
             wantsConnection = true
             connectIfNeeded()
@@ -664,6 +747,7 @@ return
     }
 
     func disconnect(preserveIntent: Bool = false) {
+        if !preserveIntent, channelAttachFailed { channelAttachFailed = false }
         if isConnected {
             recordRouteControl(
                 kind: .runtimeControlDisconnected,
@@ -1102,11 +1186,16 @@ return
         guard let measured = HakoMemoryLedger.lastRun(
             from: phaseLogLines
         ).rows.last?.name, !measured.isEmpty else { return account }
+         
+         
+         
         return HakoStartupExplanation(
             resource: account.resource,
             footprintBytes: account.footprintBytes,
             budgetBytes: account.budgetBytes,
-            stage: measured
+            stage: measured,
+            failureReason: account.failureReason,
+            sawCriticalPressure: account.sawCriticalPressure
         )
     }
 
@@ -1495,7 +1584,13 @@ return
             guard token == generation,
                   self.client === client,
                   isConnected,
-                  confirmedGroup?.now == name else {
+                   
+                   
+                   
+                   
+                   
+                   
+                  confirmedGroup?.holdsSelection(name) == true else {
                 lastError =
                     "The running proxy group did not confirm the selected route."
                 recordRouteControl(
@@ -1952,7 +2047,19 @@ return
          
          
          
-        guard let providerSession else { return }
+         
+         
+         
+         
+         
+         
+         
+         
+        guard let providerSession else {
+            noteConnectFailure("no-tunnel-session-yet;retrying")
+            scheduleReconnect(token: generation)
+            return
+        }
         guard let container = HakoAppIdentifiers.appGroupContainer
         else {
             lastError = "App Group container unavailable"
@@ -1967,10 +2074,16 @@ return
         runtimeIdentityCache.invalidate()
         let token = generation
         isConnecting = true
+        armAttemptWatchdog(token: token)
         connectTask = Task { [weak self] in
             do {
                 let hello = try await HakoClient(session: providerSession).hello()
-                await self?.nativeCleanup?.value
+                 
+                 
+                 
+                 
+                 
+                await Self.awaitBounded(self?.nativeCleanup, seconds: 5)
                 guard !Task.isCancelled else { return }
                 self?.openNativeClient(
                     socketPath: container.appendingPathComponent("clash.sock").path,
@@ -1984,7 +2097,7 @@ return
     }
 
     private func makeCommandHandler() -> HandlerProxy {
-        HandlerProxy(owner: self, token: generation, now: memoryNow, enqueueMemory: enqueueMemory)
+        HandlerProxy(owner: self, token: generation, now: memoryNow, enqueueMemory: enqueueMemory, recordLogs: logRecordingEnabled)
     }
 
      
@@ -1992,13 +2105,21 @@ return
         makeCommandHandler()
     }
 
+    func logHandlerForTesting() -> (HakoClashAPIClientHandlerProtocol, HakoLogBudget) {
+        let handler = makeCommandHandler()
+        return (handler, handler.logDeliveryBudget)
+    }
+
     private func openNativeClient(socketPath: String, hello: HakoCommandHello, token: UInt64) {
         guard token == generation, wantsConnection else { return }
         connectTask = nil
         let handler = makeCommandHandler()
+        let logLevel = Self.logSubscriptionLevel(forDisplay: logDisplayLevel)
         let options = Self.makeOptions(
-            onlyStatisticsProxy: TrafficStatisticsSettings.onlyProxy()
+            onlyStatisticsProxy: TrafficStatisticsSettings.onlyProxy(),
+            logLevel: logLevel
         )
+        subscribedLogLevel = logLevel
         var error: NSError?
         guard let newClient = HakoNewClashAPIClientWithOptions(
             socketPath,
@@ -2045,13 +2166,17 @@ return
         applyTrafficStatisticsPreference()
     }
 
-    static func makeOptions(onlyStatisticsProxy: Bool) -> HakoClashAPIClientOptions {
+    static func makeOptions(
+        onlyStatisticsProxy: Bool,
+        logLevel: String = "info"
+    ) -> HakoClashAPIClientOptions {
         let options = HakoClashAPIClientOptions()
          
          
         options.statusInterval = 250
         options.addCommand(HakoCommandStatus)
         options.addCommand(HakoCommandLog)
+        options.logLevel = logLevel
          
          
          
@@ -2164,11 +2289,13 @@ return
 
     private func connectFailed(_ error: Error, token: UInt64) {
         guard token == generation else { return }
+        if !channelAttachFailed { channelAttachFailed = true }
         isConnecting = false
         connectTask = nil
         closeNativeControlAttempt()
         isConnected = false
         lastError = error.localizedDescription
+        noteConnectFailure("connect-failed:" + error.localizedDescription)
          
          
         isReopeningControlSession = false
@@ -2177,6 +2304,7 @@ return
 
     private func handleConnected(token: UInt64) {
         guard token == generation else { return }
+        if channelAttachFailed { channelAttachFailed = false }
         isConnecting = false
         connectTask = nil
         isConnected = true
@@ -2218,7 +2346,45 @@ return
         peerCapabilities = []
         publishRuntimeDiagnostics(nil)
         if !message.isEmpty { lastError = message }
+        noteConnectFailure("stream-disconnected:" + (message.isEmpty ? "(no-reason-given)" : message))
         scheduleReconnect(token: generation)
+    }
+
+     
+     
+     
+     
+    private func noteConnectFailure(_ message: String, now: Date = Date()) {
+        guard ControlConnectFailureLogGate.shouldLog(message, after: lastConnectFailureLog, now: now) else { return }
+        lastConnectFailureLog = (message, now)
+        HakoLogStore.shared.append("control-session/" + message, stream: .app, level: .warning)
+    }
+
+     
+     
+     
+     
+    static let attemptWedgeSeconds: TimeInterval = 45
+
+    private func armAttemptWatchdog(token: UInt64) {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.attemptWedgeSeconds * 1_000_000_000))
+            guard let self, token == self.generation, self.isConnecting, self.wantsConnection else { return }
+            self.noteConnectFailure("attempt-wedged:\(Int(Self.attemptWedgeSeconds))s;reopening")
+            self.reconnectIfNeeded()
+        }
+    }
+
+     
+     
+    private nonisolated static func awaitBounded(_ task: Task<Void, Never>?, seconds: Double) async {
+        guard let task else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await task.value }
+            group.addTask { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+            await group.next()
+            group.cancelAll()
+        }
     }
 
     private func scheduleReconnect(token: UInt64) {
@@ -2279,8 +2445,36 @@ return
         } while memoryBytes != memoryState.inuse
     }
 
+     
+     
+     
+    static func logSubscriptionLevel(forDisplay level: String) -> String {
+        level.lowercased() == "debug" ? "debug" : "info"
+    }
+
+    func setLogDisplayLevel(_ level: String) {
+        logDisplayLevel = level.lowercased()
+         
+         
+         
+         
+        guard Self.logSubscriptionLevel(forDisplay: logDisplayLevel) != subscribedLogLevel,
+              client != nil || isConnecting else { return }
+        reconnectIfNeeded()
+    }
+
+     
+     
+    func refreshLogDisplayLevel(from defaults: UserDefaults = GlobalConfig.appGroupDefaults) {
+        setLogDisplayLevel(HakoLogSettings.liveStreamLevel(from: defaults))
+    }
+
+    var logDisplayLevelForTesting: String { logDisplayLevel }
+
     private func handleLog(_ payload: LogPayload, token: UInt64) {
-        guard token == generation else { return }
+        guard token == generation, logDisplayLevel != "silent" else { return }
+        let levels = ["debug": 0, "info": 1, "warning": 2, "error": 3, "silent": 4]
+        guard (levels[payload.type.lowercased()] ?? 3) >= (levels[logDisplayLevel] ?? 1) else { return }
          
         enqueueLogLines([
             "\(payload.type.uppercased()) \(payload.payload)",
@@ -2358,7 +2552,7 @@ return
     @Published private(set) var selectionAnnouncements = 0
 
     private func enqueueLogLines(_ lines: [String]) {
-        guard !lines.isEmpty else { return }
+        guard logRecordingEnabled(), !lines.isEmpty else { return }
         pendingLogs.append(contentsOf: lines)
         guard logBatchTask == nil else { return }
         if logs.isEmpty {
@@ -2374,14 +2568,16 @@ return
 
     private func flushLogs() {
         logBatchTask = nil
-        guard !pendingLogs.isEmpty else { return }
-        var buffer = logs
-        buffer.append(contentsOf: pendingLogs)
-        pendingLogs.removeAll(keepingCapacity: true)
-        if buffer.count > Self.logMaxLines {
-            buffer.removeFirst(buffer.count - Self.logMaxLines)
+        guard logRecordingEnabled() else { pendingLogs.removeAll(); return }
+        guard !pendingLogs.isEmpty || pendingLogs.dropped > 0 else { return }
+        var buffer = HakoLogBuffer(maximumBytes: 1024 * 1024, maximumCount: Self.logMaxLines)
+        buffer.append(contentsOf: logs)
+        buffer.append(contentsOf: pendingLogs.lines)
+        if pendingLogs.dropped > 0 {
+            buffer.append(contentsOf: ["WARNING Log display busy; dropped \(pendingLogs.dropped) lines."])
         }
-        logs = buffer
+        pendingLogs.removeAll(keepingCapacity: true)
+        logs = buffer.lines
     }
 
      
@@ -2458,6 +2654,8 @@ return
          
          
          
+         
+         
         if let writes = modeWritesAtRequest, writes != localModeWrites {
             return
         }
@@ -2499,6 +2697,16 @@ return
               var selected = proxies[group] as? [String: Any]
         else { return }
         selected["now"] = name
+         
+         
+         
+         
+         
+        if ["urltest", "url-test", "fallback"].contains(
+            ((selected["type"] as? String) ?? "").lowercased()
+        ) {
+            selected["fixed"] = name
+        }
         proxies[group] = selected
         root["proxies"] = proxies
         self.proxiesData = try? JSONSerialization.data(withJSONObject: root)
@@ -2557,6 +2765,8 @@ private extension ClashCommandClient {
 
         let now: @Sendable () -> UInt64
         let enqueueMemory: ClashMemoryDelivery
+        let recordLogs: @Sendable () -> Bool
+        let logDeliveryBudget = HakoLogBudget(maximumBytes: 256 * 1024, maximumCount: 256)
         private let memoryReceiptLock = NSLock()
         private var memorySequence: UInt64 = 0
 
@@ -2569,11 +2779,13 @@ private extension ClashCommandClient {
 
         init(owner: ClashCommandClient, token: UInt64,
              now: @escaping @Sendable () -> UInt64,
-             enqueueMemory: @escaping ClashMemoryDelivery) {
+             enqueueMemory: @escaping ClashMemoryDelivery,
+             recordLogs: @escaping @Sendable () -> Bool) {
             self.owner = owner
             self.token = token
             self.now = now
             self.enqueueMemory = enqueueMemory
+            self.recordLogs = recordLogs
         }
 
         func connected() {
@@ -2604,10 +2816,23 @@ private extension ClashCommandClient {
         }
 
         func writeLogs(_ message: String?) {
-            guard let data = message?.data(using: .utf8),
-                  let payload = try? JSONDecoder().decode(LogPayload.self, from: data)
-            else { return }
-            Task { @MainActor [weak owner] in owner?.handleLog(payload, token: token) }
+            guard recordLogs(), let message else { return }
+            let size = message.utf8.count
+            let budget = logDeliveryBudget
+            guard budget.reserve(size) else { return }
+            guard let data = message.data(using: .utf8),
+                  let payload = try? JSONDecoder().decode(LogPayload.self, from: data) else {
+                budget.release(size)
+                return
+            }
+            Task { @MainActor [weak owner, token] in
+                owner?.handleLog(payload, token: token)
+                let lost = budget.release(size)
+                if lost > 0 {
+                    owner?.handleLog(LogPayload(type: "warning",
+                        payload: "Log delivery busy; dropped \(lost) lines."), token: token)
+                }
+            }
         }
 
         func writeConnections(_: String?) {}

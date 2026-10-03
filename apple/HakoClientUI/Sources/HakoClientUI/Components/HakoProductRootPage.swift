@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 private struct HakoRegularRootScrollsContentKey: EnvironmentKey {
@@ -90,7 +91,22 @@ private struct HakoRegularRootIsActiveKey: EnvironmentKey {
  
 public final class HakoLatencyPulseGate: @unchecked Sendable, Equatable {
     public var isOpen = true
+     
+     
+     
+     
+     
+     
+     
+    public let opened = PassthroughSubject<Void, Never>()
     public init() {}
+
+     
+    public func setOpen(_ open: Bool) {
+        let wasOpen = isOpen
+        isOpen = open
+        if open, !wasOpen { opened.send() }
+    }
 
      
      
@@ -513,6 +529,7 @@ struct HakoProductRootPage<Content: View>: View {
     }
 
     var body: some View {
+        let _ = HakoPerf.count("root.page.body")
         Group {
             if regularShellScrollsContent {
                 productContent
@@ -626,8 +643,11 @@ struct HakoProductRootPage<Content: View>: View {
     }
 
     private func largeTitle(_ title: String) -> some View {
+         
+         
+         
         Text(hako: .copy(title))
-            .font(.largeTitle.bold())
+            .font(.title2.bold())
             .accessibilityAddTraits(.isHeader)
             .accessibilityIdentifier("regular.detail.title")
     }
@@ -702,8 +722,10 @@ struct HakoProductPageSection<Content: View>: View {
         }
     }
 
-    @ViewBuilder
-    private var primaryCard: some View {
+     
+     
+     
+    private var primaryCard: AnyView {
         let rows = VStack(spacing: 0) {
             content
         }
@@ -726,29 +748,37 @@ struct HakoProductPageSection<Content: View>: View {
 
          
          
-        if usesTraditionalPrimaryCard {
-            traditionalCard
-        } else if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
-             
-             
-             
-             
-            rows
-                .clipShape(
-                    RoundedRectangle(
-                        cornerRadius: HakoTheme.Radius.liquidGlassCard,
-                        style: .continuous
-                    )
-                )
-                .glassEffect(
-                    .regular,
-                    in: .rect(
-                        cornerRadius: HakoTheme.Radius.liquidGlassCard
-                    )
-                )
-        } else {
-            traditionalCard
+         
+         
+         
+         
+         
+        if usesTraditionalPrimaryCard
+            || !HakoPlatformLayout.touchCardWearsSystemMaterial {
+            return AnyView(traditionalCard)
         }
+        if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
+             
+             
+             
+             
+            return AnyView(
+                rows
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: HakoTheme.Radius.liquidGlassCard,
+                            style: .continuous
+                        )
+                    )
+                    .glassEffect(
+                        .regular,
+                        in: .rect(
+                            cornerRadius: HakoTheme.Radius.liquidGlassCard
+                        )
+                    )
+            )
+        }
+        return AnyView(traditionalCard)
     }
 
      

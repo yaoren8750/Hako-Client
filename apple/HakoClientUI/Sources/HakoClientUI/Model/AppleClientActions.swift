@@ -17,6 +17,8 @@ public enum HakoProfilesCommand: Codable, Equatable, Sendable {
     case select(id: Profile.ID)
     case reorder(ids: [Profile.ID])
     case sync(id: Profile.ID)
+    case setConfigurationSourceUpdates(id: Profile.ID, enabled: Bool)
+    case setUsesOriginalConfiguration(id: Profile.ID, enabled: Bool)
     case rename(id: Profile.ID, label: String)
     case saveSubscription(
         id: Profile.ID,
@@ -54,7 +56,11 @@ public enum HakoProxiesCommand: Codable, Equatable, Sendable {
     case unpin(group: String)
      
      
-    case testMember(name: String)
+     
+     
+     
+     
+    case testMember(name: String, group: String? = nil)
      
      
      
@@ -107,6 +113,9 @@ public enum HakoActivityCommand: Codable, Equatable, Sendable {
      
      
     case setLogSeverityFilter([String])
+     
+     
+    case setLogLevelDirective(String?)
      
      
      

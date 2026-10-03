@@ -461,6 +461,7 @@ struct ProxyNodeDetailsView: View {
     @Environment(\.hakoPopRoute) private var popRoute
     @StateObject private var draft: ProxyNodeEditorDraft
     @State private var errorMessage = ""
+    @State private var saving = false
     @State private var revealsPassword = false
     @State private var revealsObfsPassword = false
     @State private var revealedSecretKeys: Set<String> = []
@@ -541,19 +542,6 @@ struct ProxyNodeDetailsView: View {
          
          
          
-        .safeAreaInset(edge: .bottom) {
-            if !insideProductModal, let sentence = missingFieldSentence {
-                Text(hako: .copy(sentence))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(.bar)
-                     
-                     
-                    .accessibilityHidden(true)
-            }
-        }
         .hakoPageProbe("node-editor")
         .accessibilityIdentifier("proxies.nodeEditor.\(draft.typeID)")
         .toolbar {
@@ -589,15 +577,15 @@ struct ProxyNodeDetailsView: View {
          
          
         .hakoRegistersDeparture(
-            isDirty: draft.isDirty,
-            save: { completion in
-                save()
-                completion(true)
-            },
+            isDirty: draft.isDirty || chainDialerChanged,
+            isBusy: saving,
+            save: saveAndReport,
              
              
             discard: {}
         )
+        .disabled(saving)
+        .interactiveDismissDisabled(saving)
         .hakoProductModalRoot(title: isNew ? "Add Node" : "Edit Node")
          
          
@@ -690,8 +678,6 @@ struct ProxyNodeDetailsView: View {
         HakoSection("Obfuscation packet size") {
             editableRow("Minimum", key: "obfs-min-packet-size", number: true)
             editableRow("Maximum", key: "obfs-max-packet-size", number: true)
-        } footer: {
-            Text("Packet-size bounds are used only by Gecko obfuscation.")
         }
 
         HakoSection("QUIC tuning") {
@@ -713,8 +699,6 @@ struct ProxyNodeDetailsView: View {
             editableRow("Maximum Stream Window", key: "max-stream-receive-window", number: true)
             editableRow("Initial Connection Window", key: "initial-connection-receive-window", number: true)
             editableRow("Maximum Connection Window", key: "max-connection-receive-window", number: true)
-        } footer: {
-            Text("Advanced QUIC values should normally remain unchanged.")
         }
 
          
@@ -752,7 +736,7 @@ struct ProxyNodeDetailsView: View {
             editableRow("Idle Session Timeout", key: "idle-session-timeout", placeholder: "30", number: true)
             editableRow("Minimum Idle Sessions", key: "min-idle-session", placeholder: "0", number: true)
         } footer: {
-            Text("Values are seconds. Leave them empty to use the core's AnyTLS defaults.")
+            Text("Seconds.")
         }
 
         HakoSection("Dialing") {
@@ -922,6 +906,21 @@ struct ProxyNodeDetailsView: View {
 
         dialerProxySection
 
+         
+         
+         
+         
+        if !insideProductModal, let sentence = missingFieldSentence {
+            Text(hako: .copy(sentence))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .listRowBackground(Color.clear)
+                 
+                 
+                .accessibilityHidden(true)
+        }
+
         if showsTesting {
             HakoSection("Testing") {
                 valueRow("Latency", delayTitle)
@@ -981,21 +980,17 @@ struct ProxyNodeDetailsView: View {
      
     private var subscriptionSection: some View {
         Section {
-            Text(hako: .copy("Edited from the subscription"))
+            Text(hako: .copy("Edited from the profile URL"))
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("proxies.nodeEditor.overridden")
             Button(role: .destructive) {
                 confirmsSubscriptionReset = true
             } label: {
-                Text(hako: .copy("Reset to Subscription"))
+                Text(hako: .copy("Reset to Profile URL"))
             }
             .accessibilityIdentifier("proxies.nodeEditor.reset")
-            .confirmationDialog(
-                "Reset to Subscription",
-                isPresented: $confirmsSubscriptionReset,
-                titleVisibility: .visible
-            ) {
-                Button("Reset to Subscription", role: .destructive) {
+            .alert("Reset to Profile URL", isPresented: $confirmsSubscriptionReset) {
+                Button("Reset to Profile URL", role: .destructive) {
                     do {
                         try subscriptionReset?()
                          
@@ -1008,8 +1003,9 @@ struct ProxyNodeDetailsView: View {
                         errorMessage = error.localizedDescription
                     }
                 }
+                Button("Cancel", role: .cancel) {}
             } message: {
-                Text(hako: .copy("The subscription's own values come back; the edit is discarded."))
+                Text(hako: .copy("The profile URL's own values come back; the edit is discarded."))
             }
         }
     }
@@ -1091,8 +1087,6 @@ struct ProxyNodeDetailsView: View {
                 )
             }
             .accessibilityIdentifier("proxies.nodeEditor.advanced")
-        } footer: {
-            Text("This inventory follows the exact core revision pinned by this client.")
         }
     }
 
@@ -1479,13 +1473,6 @@ struct ProxyNodeDetailsView: View {
                     valueRow("Dialer Proxy", currentDialer ?? "Not set")
                 }
                 .accessibilityIdentifier("proxies.nodeEditor.dialer-proxy")
-            } footer: {
-                switch dialerRouting {
-                case .payloadField:
-                    Text("dialer-proxy: this node connects through the chosen group or proxy. Saved with the node.")
-                case .chainAssignment:
-                    Text("dialer-proxy: this node connects through the chosen group or proxy. Saved with the node; the imported source stays unchanged.")
-                }
             }
         }
     }
@@ -1567,7 +1554,10 @@ struct ProxyNodeDetailsView: View {
         return !isDirty && !chainDialerChanged
     }
 
-    private func save() {
+    private func save() { saveAndReport { _ in } }
+
+    private func saveAndReport(_ completion: @escaping (Bool) -> Void) {
+        guard !saving else { completion(false); return }
          
          
         errorMessage = ""
@@ -1575,8 +1565,10 @@ struct ProxyNodeDetailsView: View {
             try validate()
         } catch {
             errorMessage = error.localizedDescription
+            completion(false)
             return
         }
+        saving = true
          
          
          
@@ -1589,10 +1581,14 @@ struct ProxyNodeDetailsView: View {
             #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
         )
 #endif
-        Task { @MainActor in await finishSave() }
+        Task { @MainActor in
+            let succeeded = await finishSave()
+            saving = false
+            completion(succeeded)
+        }
     }
 
-    private func finishSave() async {
+    private func finishSave() async -> Bool {
         do {
             if draft.isDirty || isNew {
                  
@@ -1606,27 +1602,22 @@ struct ProxyNodeDetailsView: View {
                chainDialerChanged {
                 try saveAssignment(chainDialer)
             }
-#if os(macOS)
             if let onDone {
+                 
+                 
                 onDone()
-            } else if let popRoute {
-                popRoute(HakoPopToken())
             } else {
-                presentationMode.wrappedValue.dismiss()
-            }
+#if os(macOS)
+                if let popRoute { popRoute(HakoPopToken()) }
+                else { presentationMode.wrappedValue.dismiss() }
 #else
-             
-             
-             
-             
-             
-             
-             
-             
-            presentationMode.wrappedValue.dismiss()
+                presentationMode.wrappedValue.dismiss()
 #endif
+            }
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -1821,10 +1812,7 @@ private struct DialerProxyPickerView: View {
                 title: "Dialer Proxy",
                 builtIns: [(
                     name: "None",
-                    caption: HakoCopy.string(
-                        "This node connects out through the group or proxy you pick here. None connects directly.",
-                        locale: locale
-                    )
+                    caption: ""
                 )],
                 builtInsTitle: nil,
                 axPrefix: "dialer-proxy",
@@ -3294,8 +3282,6 @@ private struct ProxyECHEditorView: View {
                     path: ["ech-opts", "query-server-name"],
                     identifier: "proxies.nodeEditor.tls.ech.query-server-name"
                 )
-            } footer: {
-                Text("When configuration is empty, the core resolves the ECH HTTPS record using DNS.")
             }
         }
         .hakoPageTitle("ECH")
@@ -3356,8 +3342,6 @@ private struct ProxyRealityEditorView: View {
                 .accessibilityIdentifier(
                     "proxies.nodeEditor.tls.reality.support-x25519mlkem768"
                 )
-            } footer: {
-                Text("Reality is supported by VMess, VLESS, and Trojan only when their Core option schema exposes reality-opts.")
             }
         }
         .hakoPageTitle("Reality")

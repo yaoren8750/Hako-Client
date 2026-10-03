@@ -44,7 +44,14 @@ struct ProfileCenterAdapter: View {
     }
     @State private var exportDocument: ConfigTextDocument?
     @State private var exportName = ""
+    @State private var centerDismiss = HakoDismissHandle()
+     
+     
+    @StateObject private var quickAdd: ProfileQuickAddController
     @State private var adaptationNoticeCounts: [String: Int] = [:]
+    @State private var composedProfileIDs: Set<String> = []
+    @State private var configurationLibrary = ConfigurationLibrarySnapshot()
+    @State private var libraryBrowseCache: ConfigurationLibraryBrowseCache?
 
      
      
@@ -86,36 +93,30 @@ struct ProfileCenterAdapter: View {
         self.listPresentation = listPresentation
         self.capabilityInterceptor = capabilityInterceptor
         _model = ObservedObject(wrappedValue: profiles)
+        _quickAdd = StateObject(wrappedValue: ProfileQuickAddController(model: profiles, target: .profile))
     }
 
     var body: some View {
+        let _ = HakoPerf.count("center.body")
         HakoOptionalNavigationContainer(owns: ownsNavigationContainer) {
-            HakoClientUI.HakoProfilesView(
-                snapshot: sharedSnapshot,
-                actions: sharedActions,
-                initialProfileID: initialProfileID,
-                opensImportInitially: opensImportInitially,
-                presentationClass:
-                    shellLayout == .regularSidebar
-                        ? .regularTouch
-                        : .compactTouch,
-                showsDismissControl: ownsNavigationContainer,
-                palette: productPalette,
-                pagePresentation: { content in
-                    AnyView(
-            content
-                    )
-                },
-                listPresentation: listPresentation,
-                capabilityInterceptor: capabilityInterceptor,
-                icon: { symbol in
-                    HakoSymbolImage(symbol: symbol)
-                },
-                capabilityContent: { destination in
-                    capabilityView(destination)
-                }
-            )
+#if os(iOS)
+            HakoConfigurationCenterSections {
+                profilesPage
+            } nodes: {
+                ConfigurationSourceLibraryAdapter(model: model, library: configurationLibrary,
+                    changed: applyCenterLibrary, close: { centerDismiss() },
+                    embedded: true, showsClose: ownsNavigationContainer, browseCache: $libraryBrowseCache)
+            } rules: {
+                ConfigurationRuleLibraryAdapter(model: model, library: configurationLibrary,
+                    changed: applyCenterLibrary, close: { centerDismiss() },
+                    embedded: true, showsClose: ownsNavigationContainer, browseCache: $libraryBrowseCache)
+            }
+#else
+            profilesPage
+#endif
         }
+        .hakoCapturesDismiss(centerDismiss)
+        .profileQuickAddPresenters(quickAdd)
         .alert(
             isPresented: Binding(
                 get: { activeFailure != nil },
@@ -133,21 +134,6 @@ struct ProfileCenterAdapter: View {
         } message: { failure in
             Text(verbatim: failure.messageText)
         }
-        .fileExporter(
-            isPresented: Binding(
-                get: { exportDocument != nil },
-                set: { presented in
-                    if !presented {
-                        exportDocument = nil
-                    }
-                }
-            ),
-            document: exportDocument,
-            contentType: .yaml,
-            defaultFilename: exportName
-        ) { _ in
-            exportDocument = nil
-        }
         .onAppear {
             model.load()
             model.selectSoleProfileIfNeeded()
@@ -160,9 +146,128 @@ struct ProfileCenterAdapter: View {
              
             if let request = importRouter.take() { consume(request) }
         }
+        .onReceive(model.$profiles) { _ in
+             
+             
+             
+             
+             
+             
+            Task { @MainActor in
+                guard let store = model.configurationLibraryStore else { return }
+                if let snapshot = try? await Task.detached(operation: { try store.snapshot() }).value {
+                    guard snapshot.generation >= configurationLibrary.generation else { return }
+                    let composed = Set(snapshot.recipes.filter { $0.preservesOriginal != true }.map(\.id))
+                    if composed != composedProfileIDs { composedProfileIDs = composed }
+                    if snapshot != configurationLibrary { configurationLibrary = snapshot }
+                }
+            }
+        }
         .task(id: activeRevisionKey) {
             await loadAdaptationNoticeCount()
         }
+    }
+
+     
+     
+    private func rereadCentreLibrary() async {
+        guard let store = model.configurationLibraryStore,
+              let updated = try? await Task.detached(operation: { try store.snapshot() }).value,
+              updated.generation >= configurationLibrary.generation else { return }
+        applyCenterLibrary(updated)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    private func librarySubscriptionFacts(for profile: Profile) -> ProfileSubscriptionSettingsAdapter.LibraryFacts? {
+        guard let recipe = configurationLibrary.recipes.first(where: { $0.id == profile.id }),
+              recipe.sources.count == 1, let reference = recipe.sources.first,
+              let record = configurationLibrary.sources.first(where: { $0.id == reference.id }),
+              case .subscription = record.origin else { return nil }
+        return .init(intervalHours: record.updateIntervalHours ?? 0)
+    }
+
+    private func applyCenterLibrary(_ snapshot: ConfigurationLibrarySnapshot) {
+        configurationLibrary = snapshot
+        composedProfileIDs = Set(snapshot.recipes.filter { $0.preservesOriginal != true }.map(\.id))
+    }
+
+    private var usesConfigurationSections: Bool {
+#if os(iOS)
+        true
+#else
+        false
+#endif
+    }
+
+    private var profilesPage: some View {
+            HakoClientUI.HakoProfilesView(
+                snapshot: sharedSnapshot,
+                actions: sharedActions,
+                initialProfileID: initialProfileID,
+                opensImportInitially: opensImportInitially,
+                presentationClass:
+                    shellLayout == .regularSidebar
+                        ? .regularTouch
+                        : .compactTouch,
+                showsDismissControl: ownsNavigationContainer,
+                isCenterSection: usesConfigurationSections,
+                palette: productPalette,
+                pagePresentation: { content in
+                    AnyView(
+            content
+                    )
+                },
+                 
+                 
+                 
+                 
+                detailPresentation: { content in
+                    AnyView(
+                        content.fileExporter(
+                            isPresented: Binding(
+                                get: { exportDocument != nil },
+                                set: { presented in
+                                    if !presented {
+                                        exportDocument = nil
+                                    }
+                                }
+                            ),
+                            document: exportDocument,
+                            contentType: .yaml,
+                            defaultFilename: exportName
+                        ) { _ in
+                            exportDocument = nil
+                        }
+                    )
+                },
+                listPresentation: listPresentation,
+                 
+                 
+                quickAdd: usesConfigurationSections
+                    ? { AnyView(ProfileQuickAddCard(
+                        controller: quickAdd,
+                        identifiers: .init(linkIdentifier: "profile-center.quick-add.link",
+                                           scanIdentifier: "profile-center.quick-add.scan",
+                                           fileIdentifier: "profile-center.quick-add.file",
+                                           manualIdentifier: "profile-center.quick-add.manual",
+                                           statusIdentifier: "profile-center.quick-add.status"),
+                        onFirstProfileCreated: ownsNavigationContainer ? { centerDismiss() } : nil)) }
+                    : nil,
+                quickAddLeads: !ProfileCenterPolicy.hasUserProfile(model.profiles),
+                capabilityInterceptor: capabilityInterceptor,
+                icon: { symbol in
+                    HakoSymbolImage(symbol: symbol)
+                },
+                capabilityContent: { destination in
+                    capabilityView(destination)
+                }
+            )
     }
 
     private var initialProfileID: HakoClientKit.Profile.ID? {
@@ -180,14 +285,29 @@ struct ProfileCenterAdapter: View {
         palette
     }
 
+    private var catalogProfiles: [Profile] {
+        ProfileCenterPolicy.catalog(model.profiles)
+    }
+
     private var sharedSnapshot: AppleClientSnapshot {
-        AppleClientSnapshot(
+         
+         
+         
+        HakoPerf.measure("profiles.snapshot") { buildSharedSnapshot() }
+    }
+
+    private func buildSharedSnapshot() -> AppleClientSnapshot {
+        let scripts = catalogProfiles.contains { $0.overwriteMode == .script } ? ScriptLibrary.load() : []
+        return AppleClientSnapshot(
             revision: 0,
             connection: AppleClientConnectionSnapshot(
                 phase: .unavailable
             ),
             profiles: HakoProfilesSnapshot(
-                profiles: model.profiles.compactMap(profileSnapshot),
+                 
+                 
+                 
+                profiles: catalogProfiles.compactMap { profileSnapshot($0, scripts: scripts) },
                  
                  
                  
@@ -199,7 +319,8 @@ struct ProfileCenterAdapter: View {
                  
                 failure: nil,
                 statusMessage: model.statusMessage,
-                batchReport: model.batchReport.map(batchSnapshot)
+                batchReport: model.batchReport.map(batchSnapshot),
+                libraryHasFetchableSource: model.libraryHasFetchableSource
             ),
             capabilities: AppleClientCapabilities([
                 .profiles: .available,
@@ -218,42 +339,75 @@ struct ProfileCenterAdapter: View {
         }
     }
 
+     
+     
+     
+     
+     
+     
+    struct LibraryProfileFacts: Equatable {
+        var lastUpdatedAt: Date?
+        var usage: ConfigurationSubscriptionUsage?
+    }
+
+    static func libraryFacts(for profile: Profile, in library: ConfigurationLibrarySnapshot) -> LibraryProfileFacts? {
+        guard let recipe = library.recipes.first(where: { $0.id == profile.id }) else { return nil }
+        let links = recipe.sources.compactMap { reference in
+            library.sources.first { record in
+                guard record.id == reference.id, case .subscription = record.origin else { return false }
+                return true
+            }
+        }
+        return LibraryProfileFacts(lastUpdatedAt: links.map(\.updatedAt).max(),
+                                   usage: recipe.sources.count == 1 && links.count == 1 ? links[0].subscriptionUsage : nil)
+    }
+
+    static func subscriptionSnapshot(upload: Int64, download: Int64, total: Int64, expire: Int64) -> HakoProfileSubscriptionSnapshot {
+        HakoProfileSubscriptionSnapshot(
+            uploadBytes: upload, downloadBytes: download, totalBytes: total,
+            expiration: expire > 0 ? Date(timeIntervalSince1970: TimeInterval(expire)) : nil)
+    }
+
     private func profileSnapshot(
-        _ profile: Profile
+        _ profile: Profile, scripts: [ConfigScript]
     ) -> HakoProfileSnapshot? {
         guard let id = try? HakoClientKit.Profile.ID(profile.id) else {
             return nil
         }
         let isCurrent = profile.id == model.activeProfileID
+        let libraryFacts = Self.libraryFacts(for: profile, in: configurationLibrary)
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        let lastUpdatedAt = libraryFacts != nil
+            ? libraryFacts?.lastUpdatedAt
+            : profile.lastUpdatedAt
         let canDelete = ProfileCenterPolicy.canDelete(
             profileID: profile.id,
-            activeProfileID: model.activeProfileID
+            activeProfileID: model.activeProfileID,
+            profiles: model.profiles
         )
 
         return HakoProfileSnapshot(
             id: id,
-            label: profile.label,
+            label: ProfileRowPresentation.label(for: profile, locale: .current),
             source: sourceKind(profile.source),
-            sourceSummary: sourceSummary(profile),
-            subscription: profile.subscriptionInfo.map {
-                HakoProfileSubscriptionSnapshot(
-                    uploadBytes: $0.upload,
-                    downloadBytes: $0.download,
-                    totalBytes: $0.total,
-                    expiration: $0.expire > 0
-                        ? Date(
-                            timeIntervalSince1970:
-                                TimeInterval($0.expire)
-                        )
-                        : nil
-                )
-            },
-            lastUpdatedAt: profile.lastUpdatedAt,
+            sourceSummary: sourceSummary(profile, updatedAt: lastUpdatedAt),
+            subscription: libraryFacts != nil
+                ? libraryFacts?.usage.map { Self.subscriptionSnapshot(upload: $0.upload, download: $0.download, total: $0.total, expire: $0.expire) }
+                : profile.subscriptionInfo.map { Self.subscriptionSnapshot(upload: $0.upload, download: $0.download, total: $0.total, expire: $0.expire) },
+            lastUpdatedAt: lastUpdatedAt,
             autoUpdate: profile.autoUpdate,
             updateIntervalHours: profile.updateIntervalHours,
             isCurrent: isCurrent,
             isBusy: profile.id == model.busyProfileID,
-            canEditSource: model.hasEditableSource(for: profile),
+            canEditSource: profile.id != LocalDefaultProfileProvisioner.profileID && model.hasEditableSource(for: profile),
             canDelete: canDelete,
             deleteSubtitle: deleteSubtitle(
                 profile,
@@ -270,7 +424,29 @@ struct ProfileCenterAdapter: View {
                     newValue: $0.newValue,
                     appValue: $0.appValue
                 )
-            }
+            },
+            isComposed: composedProfileIDs.contains(profile.id),
+             
+             
+             
+             
+             
+            canUseOriginalConfiguration: configurationLibrary.recipes
+                .first(where: { $0.id == profile.id })
+                .map { $0.sources.count == 1 }
+                ?? (profile.id != LocalDefaultProfileProvisioner.profileID),
+            configurationSourceNames: configurationLibrary.recipes.first(where: { $0.id == profile.id }).map { recipe in
+                recipe.sources.map { pin in configurationLibrary.sources.first(where: { $0.id == pin.id })?.label ?? pin.id }
+            },
+            configurationRuleName: configurationLibrary.recipes.first(where: { $0.id == profile.id }).flatMap { recipe in
+                (configurationLibrary.rules + ConfigurationBuiltins.schemes).first(where: { $0.id == recipe.ruleSchemeID })?.displayLabel
+            },
+            followsConfigurationSourceUpdates: configurationLibrary.recipes.first(where: { $0.id == profile.id })?.followsUpdates,
+            overrideScriptName: profile.overwriteMode == .script
+                ? scripts.first { $0.id == profile.selectedScriptID }?.label : nil,
+            customRulesCount: profile.override.appendRules.count,
+            badges: ProfileRowPresentation.badges(for: profile, in: configurationLibrary),
+            note: ProfileRowPresentation.note(for: profile, in: configurationLibrary)
         )
     }
 
@@ -312,14 +488,32 @@ struct ProfileCenterAdapter: View {
         }
     }
 
-    private func sourceSummary(_ profile: Profile) -> HakoDisplayText {
+     
+     
+     
+    private func sourceSummary(
+        _ profile: Profile,
+        updatedAt: Date?
+    ) -> HakoDisplayText {
+        Self.sourceSummary(profile, updatedAt: updatedAt, locale: locale)
+    }
+
+     
+     
+     
+     
+    static func sourceSummary(
+        _ profile: Profile,
+        updatedAt: Date?,
+        locale: Locale
+    ) -> HakoDisplayText {
         switch profile.source {
         case .url(let rawURL):
             let host = SubscriptionURLPresentation.hostDescription(
                 rawURL,
                 locale: locale
             )
-            if let updated = profile.lastUpdatedAt {
+            if let updated = updatedAt {
                 return .verbatim(
                     "\(host) · \(updated.formatted(.relative(presentation: .named)))"
                 )
@@ -338,6 +532,13 @@ struct ProfileCenterAdapter: View {
     ) -> HakoDisplayText {
         if profile.id == LocalDefaultProfileProvisioner.profileID {
             return "Clash keeps Direct as a safe system fallback"
+        }
+         
+         
+         
+         
+        if canDelete, profile.id == model.activeProfileID {
+            return "Clash returns to its built-in profile"
         }
         return canDelete
             ? "Remove this profile from Clash"
@@ -358,7 +559,7 @@ struct ProfileCenterAdapter: View {
                 summary + " · " + HakoCopy.string("read-only", locale: locale)
             )
         }
-        return "Local cache · read-only"
+        return "read-only"
     }
 
     private func batchSnapshot(
@@ -404,32 +605,33 @@ struct ProfileCenterAdapter: View {
         }
     }
 
+    private func legacyImportView(onSaved: @escaping () -> Void) -> some View {
+        AddProfileView(createEmpty: { Task { _ = try? await handle(.createEmpty); onSaved() } }) { label, source, rawYAML, resources in
+            model.add(label:label,source:source,rawYAML:rawYAML,resourceFiles:resources)
+            model.selectSoleProfileIfNeeded()
+            onSaved()
+        }
+    }
+
     @ViewBuilder
     private func capabilityView(
         _ destination: HakoProfilesCapabilityDestination
     ) -> some View {
         switch destination {
         case .importProfile:
-            AddProfileView(
-                 
-                 
-                createEmpty: { Task { _ = try? await handle(.createEmpty) } }
-            ) { label, source, rawYAML, resources in
-                model.add(
-                    label: label,
-                    source: source,
-                    rawYAML: rawYAML,
-                    resourceFiles: resources
-                )
-                model.selectSoleProfileIfNeeded()
-            }
+#if os(iOS)
+            ConfigurationCreationAdapter(model: model)
+#else
+            legacyImportView(onSaved:{})
+#endif
         case .backupRestore:
             BackupRestoreView()
         case .subscriptionSettings(let id):
             if let profile = appProfile(id) {
                 ProfileSubscriptionSettingsAdapter(
                     profile: profile,
-                    model: model
+                    model: model,
+                    library: librarySubscriptionFacts(for: profile)
                 )
             } else {
                 EmptyView()
@@ -455,17 +657,39 @@ struct ProfileCenterAdapter: View {
             }
         case .override(let id):
             if let profile = appProfile(id) {
-                ProfileProjectionLoader(profile: profile, model: model) { projected in
-                    ProfileOverrideView(
-                        profile: profile,
-                        rawYAML: projected
-                    ) { updated in
-                        model.update(updated)
-                    }
+                 
+                 
+                 
+                ProfileOverrideView(profile: profile, rawYAML: model.cachedUIProjectedYAML(for: profile),
+                    configurationCenter: true, loadRawYAML: { await model.loadUIProjectedYAML(for: profile) }) { model.update($0) }
+            } else {
+                EmptyView()
+            }
+        case .network(let id):
+            if let profile = appProfile(id) {
+                ProfileNetworkSettingsView(profile: profile, sourceYAML: model.baseYAML(for: profile)) { draft in
+                    try model.updateNetwork(draft)
                 }
             } else {
                 EmptyView()
             }
+        case .trust(let id):
+            if let profile = appProfile(id) {
+                ProfileTrustPage(profile: profile, sourceYAML: model.sourceYAML(for: profile),
+                    patchJSON: profile.override.patchJSON) { patchJSON in
+                    var draft = ProfileAdvancedOverridesDraft(profile: profile)
+                    draft.rawPatchJSON = patchJSON
+                    try model.updateAdvancedOverrides(draft)
+                }
+            } else {
+                EmptyView()
+            }
+        case .configurationSources(let id):
+            ConfigurationCreationAdapter(model: model, changed: applyCenterLibrary,
+                editingProfileID: id.rawValue, editingStep: .sources)
+        case .configurationRules(let id):
+            ConfigurationCreationAdapter(model: model, changed: applyCenterLibrary,
+                editingProfileID: id.rawValue, editingStep: .rules)
         case .sourceEditor(let id):
             if let profile = appProfile(id) {
                  
@@ -475,17 +699,20 @@ struct ProfileCenterAdapter: View {
                  
                  
                  
-                ProfileSourceEditorLoader(profile: profile, model: model)
+                ProfileSourceEditorLoader(profile: profile, model: model,
+                    savesIndependentSource: composedProfileIDs.contains(profile.id))
             } else {
                 EmptyView()
             }
         case .runtimePreview(let id):
             if let profile = appProfile(id) {
-                ProfilePreviewView(title: .verbatim(profile.label)) {
-                    await model.loadCachedPreviewText(
-                        for: profile.id
-                    )
-                }
+                ProfilePreviewView(title: .verbatim(profile.label), load: {
+                     
+                     
+                     
+                     
+                    try await model.loadSavedConfigurationPreview(for: profile.id)
+                })
             } else {
                 EmptyView()
             }
@@ -555,7 +782,15 @@ struct ProfileCenterAdapter: View {
 
         case .sync(let id):
             if let profile = appProfile(id) {
-                model.sync(profile)
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                await model.syncAwaitingLibrary(profile)
+                await rereadCentreLibrary()
             }
             return .none
         case let .adoptHeldBackUpdate(id, keyPath):
@@ -568,6 +803,16 @@ struct ProfileCenterAdapter: View {
             if let profile = appProfile(id) {
                 try model.dismissHeldBackUpdates(profile)
             }
+            return .none
+
+        case let .setConfigurationSourceUpdates(id, enabled):
+            try await model.setConfigurationSourceUpdates(id.rawValue, enabled: enabled)
+            await rereadCentreLibrary()
+            return .none
+
+        case let .setUsesOriginalConfiguration(id, enabled):
+            try await model.setUsesOriginalConfiguration(id.rawValue, enabled: enabled)
+            await rereadCentreLibrary()
             return .none
 
         case let .rename(id, label):
@@ -662,7 +907,7 @@ struct ProfileCenterAdapter: View {
             guard let profile = appProfile(id) else {
                 return .none
             }
-            model.delete(profile)
+            await model.delete(profile)
             return model.profiles.contains {
                 $0.id == id.rawValue
             }
@@ -694,11 +939,11 @@ struct ProfileCenterAdapter: View {
     private func presentMacExportUnavailableAlert() {
         let alert = NSAlert()
         alert.messageText = HakoCopy.string(
-            "No Local Configuration",
+            "No Local Copy",
             locale: locale
         )
         alert.informativeText = HakoCopy.string(
-            "Sync or import this profile to cache its configuration on this device.",
+            "Sync or import this profile to keep a copy on this device.",
             locale: locale
         )
         alert.addButton(
@@ -751,11 +996,11 @@ struct ProfileCenterAdapter: View {
     private func applyOrder(
         _ desiredIDs: [HakoClientKit.Profile.ID]
     ) {
-        let desired = desiredIDs.map(\.rawValue)
-        guard desired.count == model.profiles.count,
-              Set(desired) == Set(model.profiles.map(\.id)) else {
-            return
-        }
+        let visible = desiredIDs.map(\.rawValue)
+        guard visible.count == catalogProfiles.count,
+              Set(visible) == Set(catalogProfiles.map(\.id)) else { return }
+         
+        let desired = visible + model.profiles.filter { !visible.contains($0.id) }.map(\.id)
 
         for targetIndex in desired.indices {
             guard let currentIndex = model.profiles.firstIndex(
@@ -781,23 +1026,7 @@ struct ProfileCenterAdapter: View {
     }
 
     private func consume(_ request: ProfileImportRequest) {
-        switch request {
-        case .subscription(let subscription):
-            model.installSubscription(subscription)
-        case let .configuration(fileName, yaml):
-            let label = URL(fileURLWithPath: fileName)
-                .deletingPathExtension()
-                .lastPathComponent
-            model.add(
-                label:
-                    label.isEmpty
-                        ? "Imported Configuration"
-                        : label,
-                source: .file(fileName),
-                rawYAML: yaml
-            )
-        }
-        model.selectSoleProfileIfNeeded()
+        model.consume(request)
     }
 
     private var activeRevisionKey: String {
@@ -816,7 +1045,7 @@ struct ProfileCenterAdapter: View {
                   where: { $0.id == activeID }
               )?.activeRevision != nil,
               let container = HakoAppIdentifiers.appGroupContainer else {
-            adaptationNoticeCounts = [:]
+            if !adaptationNoticeCounts.isEmpty { adaptationNoticeCounts = [:] }
             return
         }
 
@@ -836,7 +1065,7 @@ struct ProfileCenterAdapter: View {
                 ).notices.count
             ) ?? 0
         }.value
-        adaptationNoticeCounts = [activeID: count]
+        if adaptationNoticeCounts != [activeID: count] { adaptationNoticeCounts = [activeID: count] }
     }
 }
 
@@ -862,8 +1091,25 @@ enum ProfileAdaptationPresenter {
  
  
 private struct ProfileSubscriptionSettingsAdapter: View {
+     
+     
+     
+     
+     
+    struct LibraryFacts: Equatable {
+         
+        var intervalHours: Int
+    }
+
     let profile: Profile
     @ObservedObject var model: ProfilesViewModel
+     
+     
+     
+     
+     
+     
+    let library: LibraryFacts?
 
      
      
@@ -880,14 +1126,16 @@ private struct ProfileSubscriptionSettingsAdapter: View {
     @State private var autoUpdate: Bool
     @State private var updateIntervalHours: Int
     @State private var errorMessage = ""
+    @State private var confirmsCredentialRemoval = false
      
      
      
     @State private var openedWith: (url: String, auto: Bool, hours: Int)?
 
-    init(profile: Profile, model: ProfilesViewModel) {
+    init(profile: Profile, model: ProfilesViewModel, library: LibraryFacts? = nil) {
         self.profile = profile
         self.model = model
+        self.library = library
         if case .url(let url) = profile.source {
              
              
@@ -907,6 +1155,33 @@ private struct ProfileSubscriptionSettingsAdapter: View {
     var body: some View {
         HakoFeatureNavigationContainer {
             Form {
+                if let library {
+                     
+                     
+                     
+                     
+                     
+                     
+                     
+                    Section {
+                        Text(verbatim: subscriptionURL)
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("profile-metadata.url")
+                        HStack {
+                            Text("Update Interval")
+                            Spacer()
+                            if library.intervalHours > 0 {
+                                Text(hako: .format("Every %@ hours", [String(library.intervalHours)]))
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Manually").foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityIdentifier("profile-metadata.interval")
+                    } header: {
+                        Text("Profile URL")
+                    }
+                } else {
                 Section {
                      
                      
@@ -916,7 +1191,7 @@ private struct ProfileSubscriptionSettingsAdapter: View {
                     TextField(
                         "",
                         text: $subscriptionURL,
-                        prompt: Text(verbatim: "https://example.com/subscription")
+                        prompt: Text(verbatim: "https://example.com/config.yaml")
                     )
                     .labelsHidden()
                     .keyboardType(.URL)
@@ -951,11 +1226,8 @@ private struct ProfileSubscriptionSettingsAdapter: View {
                         )
                     }
                 } header: {
-                    Text("Subscription")
-                } footer: {
-                    Text(
-                        "Changing the link clears cached update metadata. The current working revision remains available if the next sync fails."
-                    )
+                    Text("Profile URL")
+                }
                 }
 
                 if ProfileMetadataUpdate.strippingSourceCredentials(
@@ -963,15 +1235,13 @@ private struct ProfileSubscriptionSettingsAdapter: View {
                 ) != nil {
                     Section {
                         Button(role: .destructive) {
-                            stripStoredCredentials()
+                            confirmsCredentialRemoval = true
                         } label: {
-                            Text("Remove Stored Link Credentials")
+                            Text("Remove Stored URL Credentials")
                         }
                         .accessibilityIdentifier("profile-metadata.strip-credentials")
                     } footer: {
-                        Text(
-                            "The saved link carries sign-in details or query values. Removing them keeps the scheme, host and path only, and may require re-importing if the provider needs them."
-                        )
+                        Text("Removing them may require importing again.")
                     }
                 }
 
@@ -984,7 +1254,14 @@ private struct ProfileSubscriptionSettingsAdapter: View {
                     }
                 }
             }
-            .hakoPageTitle("Subscription Settings")
+            .hakoPageTitle("Profile URL Settings")
+            .alert("Remove Stored URL Credentials", isPresented: $confirmsCredentialRemoval) {
+                Button("Remove Stored URL Credentials", role: .destructive) { stripStoredCredentials() }
+                    .accessibilityIdentifier("profile-metadata.strip-credentials.confirm")
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The saved profile URL carries sign-in details or query values. Removing them keeps the scheme, host and path only, and may require re-importing if the provider needs them.")
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     if !insideProductModal {
@@ -994,7 +1271,7 @@ private struct ProfileSubscriptionSettingsAdapter: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    if !insideProductModal {
+                    if !insideProductModal, library == nil {
                         Button("Save") {
                             save()
                         }
@@ -1004,9 +1281,9 @@ private struct ProfileSubscriptionSettingsAdapter: View {
                     }
                 }
             }
-            .hakoProductModalRoot(title: "Subscription Settings")
+            .hakoProductModalRoot(title: "Profile URL Settings")
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if insideProductModal {
+                if insideProductModal, library == nil {
                      
                     HakoModalActionBar(
                         primaryTitle: "Save",
@@ -1161,6 +1438,7 @@ private struct ProfileProjectionLoader<Content: View>: View {
 private struct ProfileSourceEditorLoader: View {
     let profile: Profile
     @ObservedObject var model: ProfilesViewModel
+    var savesIndependentSource = false
     @State private var source: String?
     @State private var read = false
 
@@ -1169,7 +1447,8 @@ private struct ProfileSourceEditorLoader: View {
             if read {
                 ProfileEditView(
                     profile: profile,
-                    rawYAML: source
+                    rawYAML: source,
+                    savesIndependentSource: savesIndependentSource
                 ) { updated, rawYAML, resources, disablingAutoUpdate in
                     try await model.updateEdited(
                         updated,

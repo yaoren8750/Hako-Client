@@ -100,6 +100,15 @@ struct DisclaimerView: View {
 
 struct AppShellView: View {
     @Environment(\.scenePhase) private var scenePhase
+     
+     
+     
+     
+     
+     
+     
+     
+    @State private var scenePhaseWitness = ScenePhaseWitness()
 
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -135,6 +144,9 @@ struct AppShellView: View {
      
      
     @State private var lastRouteNotedVPNStatus = ""
+     
+     
+    @State private var egressRecheck = EgressRecheckDebt()
     @State private var profileCenterDestination: AppNavigationDestination?
      
      
@@ -232,7 +244,12 @@ struct AppShellView: View {
          
          
          
-        .environment(\.locale, preferences.language.locale)
+         
+         
+         
+        .transformEnvironment(\.locale) { locale in
+            if let override = preferences.language.localeOverride { locale = override }
+        }
         .preferredColorScheme(preferences.themeMode.colorScheme)
         .tint(preferences.accent.color)
         .background(HakoTheme.canvas(pureBlack: preferences.pureBlack).ignoresSafeArea())
@@ -240,6 +257,11 @@ struct AppShellView: View {
             command.syncConnectionObservationScene(isActive: scenePhase == .active, isBackground: scenePhase == .background)
 
 
+
+
+             
+             
+            await restoreTunnelControlSession()
             proxyShare.bind(command: command)
              
              
@@ -298,6 +320,15 @@ struct AppShellView: View {
             guard command.isConnected else { return }
             Task { await nodes.refresh() }
         }
+         
+         
+         
+        .onChange(of: command.tunnelIsUp) { up in
+            syncConnectionsForSelectedTab(tunnelIsUp: up)
+        }
+        .onChange(of: command.channelAttachFailed) { failed in
+            syncConnectionsForSelectedTab(channelFailed: failed)
+        }
         .onChange(of: command.isConnected) { connected in
             syncConnectionsForSelectedTab(isConnected: connected)
             proxyShare.updateAPIAvailability(connected)
@@ -305,6 +336,11 @@ struct AppShellView: View {
              
              
              
+             
+             
+            if egressRecheck.channelChanged(up: connected) {
+                Task { _ = await stats.checkEgressIP() }
+            }
              
              
              
@@ -330,6 +366,15 @@ struct AppShellView: View {
         .onReceive(NotificationCenter.default.publisher(for: .hakoSystemActionQueued)) { _ in
             handlePendingSystemAction()
         }
+         
+         
+         
+         
+         
+        .onReceive(NotificationCenter.default.publisher(for: HakoLogSettings.levelDirectiveDidChange)) { _ in
+            command.refreshLogDisplayLevel()
+            profiles.restageActiveRuntime()
+        }
         .onChange(of: navigationState.selectedRoot) { _ in
             syncConnectionsForSelectedTab()
         }
@@ -339,8 +384,8 @@ struct AppShellView: View {
             profileImports.pendingConfirmation.map(
                 ProfileImportRouter.confirmationIsLocalConfiguration
             ) == true
-                ? Text("Add this configuration?")
-                : Text("Add this subscription?"),
+                ? Text("Add this profile?")
+                : Text("Add this profile URL?"),
             isPresented: Binding(
                  
                  
@@ -388,8 +433,8 @@ struct AppShellView: View {
             (profileImports.pendingConfirmation.map(
                 ProfileImportRouter.confirmationIsLocalConfiguration
             ) == true
-                ? Text("A link wants to add a configuration to Clash.\n\n")
-                : Text("A link wants to add a subscription to Clash.\n\n"))
+                ? Text("An install link wants to add a profile to Clash.\n\n")
+                : Text("An install link wants to add a profile URL to Clash.\n\n"))
                 + Text(verbatim: profileImports.pendingConfirmation.map {
                     ProfileImportRouter.confirmationText(for: $0)
                 } ?? "")
@@ -397,7 +442,11 @@ struct AppShellView: View {
         .onChange(of: nodes.routeGeneration) { _ in
              
              
-            guard command.isConnected else { return }
+             
+             
+             
+             
+            guard egressRecheck.routeMoved(channelUp: command.isConnected) else { return }
             Task { _ = await stats.checkEgressIP() }
         }
          
@@ -413,13 +462,29 @@ struct AppShellView: View {
             ICloudAutoBackup.shared.start()
         }
         .onChange(of: scenePhase) { phase in
+            scenePhaseWitness.phase = phase
             command.syncConnectionObservationScene(isActive: phase == .active, isBackground: phase == .background)
              
              
             ICloudAutoBackup.shared.setForeground(phase == .active)
             if phase == .active {
-                command.sync(vpnStatus: vpn.status)
-                syncConnectionsForSelectedTab(isForeground: true)
+                Task {
+                    await restoreTunnelControlSession()
+                     
+                     
+                     
+                     
+                     
+                     
+                     
+                     
+                    syncConnectionsForSelectedTab(isForeground: scenePhaseWitness.phase == .active)
+                }
+                 
+                 
+                if pendingOutboundMode == nil, let raw = HakoWidgetFactsPublisher.takeModeChosenOnACard() {
+                    pendingOutboundMode = raw
+                }
 
 
                 proxyShare.refreshAddresses()
@@ -444,7 +509,11 @@ struct AppShellView: View {
                     Task { await BackgroundRefresh.scanOnForegroundIfDue() }
 
             } else if phase == .background, !false {
-                connections.stop()
+                 
+                 
+                 
+                 
+                syncConnectionsForSelectedTab(isForeground: false)
                 Task { await nodes.cancelLatencyTests(reason: .backgrounded) }
                  
                  
@@ -785,7 +854,12 @@ struct AppShellView: View {
             openProfiles: {
                  
                  
-                if shellLayout == .regularSidebar {
+                 
+                 
+                 
+                 
+                 
+                if shellLayout == .regularSidebar, ProfileCenterPolicy.hasUserProfile(profiles.profiles) {
                     isPickingProfile = true
                 } else {
                     navigate(to: .profiles)
@@ -990,8 +1064,19 @@ struct AppShellView: View {
         }
     }
 
+    private func restoreTunnelControlSession() async {
+        await vpn.refreshSystemVPNInstallation()
+         
+         
+        rebind()
+    }
+
     private func rebind() {
         HakoPerf.measure("shell.rebind") {
+             
+             
+             
+            command.bind(sessionProvider: { [weak vpn] in vpn?.session })
             command.bind(session: vpn.session)
             command.sync(vpnStatus: vpn.status)
             stats.bind(session: vpn.session, command: command)
@@ -1026,12 +1111,17 @@ struct AppShellView: View {
      
      
      
+     
     private func syncConnectionsForSelectedTab(
         isForeground: Bool? = nil,
-        isConnected: Bool? = nil
+        isConnected: Bool? = nil,
+        tunnelIsUp: Bool? = nil,
+        channelFailed: Bool? = nil
     ) {
         connections.syncScene(
             isConnected: isConnected ?? command.isConnected,
+            tunnelIsUp: tunnelIsUp ?? command.tunnelIsUp,
+            channelFailed: channelFailed ?? command.channelAttachFailed,
             isActive: isForeground ?? (scenePhase == .active),
             isBackground: isForeground == nil ? scenePhase == .background : isForeground == false
         )
@@ -1215,6 +1305,15 @@ struct AppShellView: View {
      
      
     private func handleVPNStatusTransition(_ status: String) {
+         
+         
+         
+        command.bind(session: vpn.session)
+         
+         
+         
+         
+        stats.bind(session: vpn.session, command: command)
         command.sync(vpnStatus: status)
         publishVPNControlSnapshot(status: status)
          
@@ -1268,4 +1367,9 @@ private struct RegularSidebarTitleStyle: ViewModifier {
             content.navigationBarTitleDisplayMode(.large)
         }
     }
+}
+
+ 
+private final class ScenePhaseWitness {
+    var phase: ScenePhase = .inactive
 }

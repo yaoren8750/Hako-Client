@@ -24,12 +24,52 @@ struct HakoTVSubscription: Codable, Equatable, Identifiable {
      
      
     let restored: Restored?
+     
+     
+     
+     
+    let rules: HakoTVProfileRules?
+     
+     
+     
+     
+     
+     
+    let scriptURL: URL?
+     
+     
+     
+     
+     
+    let updateIntervalHours: Int?
 
-    init(requestURL: URL, name: String, updatedAt: Date? = nil, restored: Restored? = nil) {
+    init(requestURL: URL, name: String, updatedAt: Date? = nil, restored: Restored? = nil,
+         rules: HakoTVProfileRules? = nil, scriptURL: URL? = nil, updateIntervalHours: Int? = nil) {
         self.requestURL = requestURL
         self.name = name
         self.updatedAt = updatedAt
         self.restored = restored
+        self.rules = rules
+        self.scriptURL = scriptURL
+        self.updateIntervalHours = updateIntervalHours
+    }
+
+     
+    func withScriptURL(_ scriptURL: URL?) -> HakoTVSubscription {
+        HakoTVSubscription(requestURL: requestURL, name: name, updatedAt: updatedAt, restored: restored, rules: rules, scriptURL: scriptURL, updateIntervalHours: updateIntervalHours)
+    }
+
+     
+    func withUpdateInterval(hours: Int?) -> HakoTVSubscription {
+        HakoTVSubscription(requestURL: requestURL, name: name, updatedAt: updatedAt, restored: restored, rules: rules, scriptURL: scriptURL, updateIntervalHours: hours)
+    }
+
+    var effectiveRules: HakoTVProfileRules { rules ?? .own }
+
+     
+     
+    func withRules(_ rules: HakoTVProfileRules) -> HakoTVSubscription {
+        HakoTVSubscription(requestURL: requestURL, name: name, updatedAt: updatedAt, restored: restored, rules: rules, scriptURL: scriptURL, updateIntervalHours: updateIntervalHours)
     }
 
     struct Restored: Codable, Equatable {
@@ -147,21 +187,24 @@ struct HakoTVSubscriptionStore: @unchecked Sendable {
      
      
      
-    mutating func add(urlString: String, name: String) throws {
+     
+     
+    mutating func add(urlString: String, name: String, rules: HakoTVProfileRules = .own) throws {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed) else {
             throw ProfileValidationError.invalidRemoteURL
         }
         _ = try Profile.RemoteSource(requestURL: url)
         if let index = subscriptions.firstIndex(where: { $0.id == url }) {
+            let existing = subscriptions[index]
             let typedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !typedName.isEmpty {
-                subscriptions[index] = HakoTVSubscription(
-                    requestURL: url, name: name, updatedAt: subscriptions[index].updatedAt
-                )
-            }
+            subscriptions[index] = HakoTVSubscription(
+                requestURL: url, name: typedName.isEmpty ? existing.name : name,
+                updatedAt: existing.updatedAt, restored: existing.restored, rules: rules,
+                scriptURL: existing.scriptURL, updateIntervalHours: existing.updateIntervalHours
+            )
         } else {
-            subscriptions.append(HakoTVSubscription(requestURL: url, name: name))
+            subscriptions.append(HakoTVSubscription(requestURL: url, name: name, rules: rules, updateIntervalHours: Self.defaultUpdateIntervalHours))
         }
         chosenID = url
         persist()
@@ -185,9 +228,51 @@ struct HakoTVSubscriptionStore: @unchecked Sendable {
             requestURL: existing.requestURL,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             updatedAt: existing.updatedAt,
-            restored: existing.restored
+            restored: existing.restored,
+            rules: existing.rules,
+            scriptURL: existing.scriptURL, updateIntervalHours: existing.updateIntervalHours
         )
         persist()
+    }
+
+     
+     
+     
+    mutating func setRules(_ id: HakoTVSubscription.ID, _ rules: HakoTVProfileRules) {
+        guard let index = subscriptions.firstIndex(where: { $0.id == id }) else { return }
+        let existing = subscriptions[index]
+        subscriptions[index] = HakoTVSubscription(
+            requestURL: existing.requestURL, name: existing.name, updatedAt: existing.updatedAt,
+            restored: existing.restored, rules: rules, scriptURL: existing.scriptURL, updateIntervalHours: existing.updateIntervalHours
+        )
+        persist()
+    }
+
+     
+    static let defaultUpdateIntervalHours = 12
+
+    mutating func setUpdateInterval(_ id: HakoTVSubscription.ID, hours: Int?) {
+        guard let index = subscriptions.firstIndex(where: { $0.id == id }) else { return }
+        subscriptions[index] = subscriptions[index].withUpdateInterval(hours: hours)
+        persist()
+    }
+
+    mutating func setScriptURL(_ id: HakoTVSubscription.ID, _ scriptURL: URL?) {
+        guard let index = subscriptions.firstIndex(where: { $0.id == id }) else { return }
+        subscriptions[index] = subscriptions[index].withScriptURL(scriptURL)
+        persist()
+    }
+
+     
+     
+     
+    static func scriptURL(from text: String) throws -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme), url.host?.isEmpty == false
+        else { throw ProfileValidationError.invalidRemoteURL }
+        return url
     }
 
      
@@ -224,7 +309,9 @@ struct HakoTVSubscriptionStore: @unchecked Sendable {
         subscriptions[index] = HakoTVSubscription(
             requestURL: url,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-            updatedAt: nil
+            updatedAt: nil,
+            rules: subscriptions[index].rules,
+            scriptURL: subscriptions[index].scriptURL, updateIntervalHours: subscriptions[index].updateIntervalHours
         )
         if chosenID == id { chosenID = url }
         persist()
@@ -245,7 +332,9 @@ struct HakoTVSubscriptionStore: @unchecked Sendable {
             requestURL: existing.requestURL,
             name: PanelName.deduplicated(panelName, existing: others),
             updatedAt: existing.updatedAt,
-            restored: existing.restored
+            restored: existing.restored,
+            rules: existing.rules,
+            scriptURL: existing.scriptURL, updateIntervalHours: existing.updateIntervalHours
         )
         persist()
     }
@@ -256,7 +345,8 @@ struct HakoTVSubscriptionStore: @unchecked Sendable {
         guard let index = subscriptions.firstIndex(where: { $0.id == id }) else { return }
         let existing = subscriptions[index]
         subscriptions[index] = HakoTVSubscription(
-            requestURL: existing.requestURL, name: existing.name, updatedAt: date, restored: existing.restored
+            requestURL: existing.requestURL, name: existing.name, updatedAt: date, restored: existing.restored,
+            rules: existing.rules, scriptURL: existing.scriptURL, updateIntervalHours: existing.updateIntervalHours
         )
         persist()
     }
@@ -271,7 +361,9 @@ struct HakoTVSubscriptionStore: @unchecked Sendable {
                 requestURL: item.requestURL,
                 name: item.name,
                 updatedAt: subscriptions[index].updatedAt,
-                restored: item.restored
+                restored: item.restored,
+                rules: subscriptions[index].rules,
+                scriptURL: subscriptions[index].scriptURL, updateIntervalHours: subscriptions[index].updateIntervalHours
             )
         } else {
             subscriptions.append(item)
@@ -313,9 +405,11 @@ struct HakoTVSubscriptionStore: @unchecked Sendable {
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         var store = HakoTVSubscriptionStore(defaults: defaults)
-        try? store.add(urlString: "https://sub.example.com/clash/home", name: "Home")
-        try? store.add(urlString: "https://example.net/api/v1/client/subscribe", name: "")
-        try? store.add(urlString: "https://backup.example.com/sub", name: "Backup line")
+         
+         
+        try? store.add(urlString: "https://sub.example.com/clash/home", name: "Home", rules: .defaultRules)
+        try? store.add(urlString: "https://example.net/api/v1/client/subscribe", name: "", rules: .lazyRules)
+        try? store.add(urlString: "https://backup.example.com/sub", name: "Backup line", rules: .own)
         store.use(URL(string: "https://sub.example.com/clash/home")!)
         return store
     }

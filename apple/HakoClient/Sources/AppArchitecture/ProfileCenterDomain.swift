@@ -5,20 +5,104 @@ import HakoClientKit
  
  
 enum ProfileCenterPolicy {
+     
+     
+     
+     
     static func automaticSelectionID(
         profiles: [Profile],
         activeProfileID: String?
     ) -> String? {
         guard activeProfileID == nil else { return nil }
+        let userProfiles = profiles.filter { $0.id != LocalDefaultProfileProvisioner.profileID }
+        if userProfiles.count == 1 { return userProfiles[0].id }
         if profiles.contains(where: { $0.id == LocalDefaultProfileProvisioner.profileID }) {
             return LocalDefaultProfileProvisioner.profileID
         }
         return profiles.count == 1 ? profiles[0].id : nil
     }
 
-    static func canDelete(profileID: String, activeProfileID: String?) -> Bool {
-        profileID != LocalDefaultProfileProvisioner.profileID
-            && profileID != activeProfileID
+     
+     
+     
+    static func selectedProfileIsSystemFallback(
+        selectedID: String?,
+        profiles: [Profile]
+    ) -> Bool {
+        selectedID == LocalDefaultProfileProvisioner.profileID && !hasUserProfile(profiles)
+    }
+
+     
+     
+     
+    static func hasUserProfile(_ profiles: [Profile]) -> Bool {
+        profiles.contains { $0.id != LocalDefaultProfileProvisioner.profileID }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func catalog(_ profiles: [Profile]) -> [Profile] {
+        profiles.filter { $0.id != LocalDefaultProfileProvisioner.profileID }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func canDelete(profileID: String, activeProfileID: String?,
+                          profiles: [Profile]) -> Bool {
+        guard profileID != LocalDefaultProfileProvisioner.profileID else { return false }
+        guard profileID == activeProfileID else { return true }
+         
+         
+         
+         
+        guard profiles.contains(where: { $0.id == LocalDefaultProfileProvisioner.profileID })
+        else { return false }
+        let own = profiles.filter { $0.id != LocalDefaultProfileProvisioner.profileID }
+        return own.count == 1 && own[0].id == profileID
     }
 }
 
@@ -37,12 +121,12 @@ enum ProfileLabelPolicy {
         switch source {
         case .url(let raw):
             if let host = URL(string: raw)?.host, !host.isEmpty { return host }
-            return "Subscription"
+            return "Profile URL"
         case .file(let name):
             let stem = (name as NSString).deletingPathExtension
             return stem.isEmpty ? "Profile" : stem
         case .clipboard:
-            return "Pasted Configuration"
+            return "Pasted Profile"
         }
     }
 
@@ -54,7 +138,7 @@ enum ProfileLabelPolicy {
      
      
     static func generatedNames(for source: Profile.Source) -> Set<String> {
-        var names: Set<String> = ["Profile", "Subscription"]
+        var names: Set<String> = ["Profile", "Profile URL"]
         names.insert(name(given: "", for: source))
         if case .url(let raw) = source {
             names.insert(SubscriptionURLPresentation.autoLabel(for: raw))
@@ -125,7 +209,7 @@ enum ProfileMetadataUpdate {
             case .emptyName:
                 return "Profile name cannot be empty."
             case .unusableSubscription:
-                return "Enter a subscription address."
+                return "Enter a profile URL."
             case .invalidInterval:
                 return "Automatic update interval must be at least 1 hour."
             }
@@ -343,9 +427,8 @@ enum DirectProfileTemplate {
       # moment a proxy is added: a NAS, a printer or a router page must not be
       # carried through the tunnel. `lan`, not `private` -- only `lan` is the
       # pseudo-rule the kernel answers from the address itself, without a
-      # database (rules/common/geoip.go:154-159, :213), while `private` would
-      # look for a category our bundled geoip.metadb does not carry and the
-      # config would be refused. `no-resolve` because under fake-ip a domain
+      # database (rules/common/geoip.go). The bundled metadb also has private,
+      # but `lan` remains available if that database is replaced. Under fake-ip a domain
       # request already carries a synthetic address.
       - GEOIP,lan,DIRECT,no-resolve
       - MATCH,Default Route

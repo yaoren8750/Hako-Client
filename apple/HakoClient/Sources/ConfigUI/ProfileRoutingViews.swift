@@ -220,7 +220,16 @@ struct ProfileRoutePresetView: View {
                 )
             }.value
         }
-        .hakoDoorPresenter(payload: $routingDoor)
+         
+         
+        .hakoDoorPresenter(
+            payload: $routingDoor,
+            saving: HakoDoorSaving(
+                isDirty: { draft != openedWith },
+                save: { $0(commit()) },
+                discard: { draft = openedWith }
+            )
+        )
         .hakoPageTitle("Tunnel & Routes")
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if insideProductModal {
@@ -245,8 +254,7 @@ struct ProfileRoutePresetView: View {
         .hakoRegistersDeparture(
             isDirty: draft != openedWith,
             save: { completion in
-                persist()
-                completion(true)
+                completion(commit())
             },
             discard: { draft = openedWith }
         )
@@ -405,15 +413,24 @@ struct ProfileRoutePresetView: View {
         }
     }
 
-    private func persist() {
+     
+     
+     
+     
+     
+    private func persist() { if commit() { closePage() } }
+
+    @discardableResult
+    private func commit() -> Bool {
         do {
             try save(draft)
-            closePage()
+            return true
         } catch let bounded as ProfileRoutingDraftError {
             error = bounded.localizedDescription
         } catch {
             self.error = "Route coverage could not be saved. The previous configuration is still available."
         }
+        return false
     }
 
      
@@ -854,8 +871,7 @@ struct ProfileProxyChainsView: View {
             isDirty: openedWith.map { draft != $0 } ?? false
                 || !payloadEdits.isEmpty,
             save: { completion in
-                persist()
-                completion(true)
+                completion(commit())
             },
             discard: {
                 if let openedWith { draft = openedWith }
@@ -918,7 +934,15 @@ struct ProfileProxyChainsView: View {
         preparation = await Self.prepared(profile: profile, rawYAML: rawYAML)
     }
 
-    private func persist() {
+     
+     
+     
+     
+     
+    private func persist() { if commit() { closePage() } }
+
+    @discardableResult
+    private func commit() -> Bool {
         do {
              
              
@@ -930,7 +954,7 @@ struct ProfileProxyChainsView: View {
                 payloadEdits = []
             }
             try save(draft)
-            closePage()
+            return true
         } catch let bounded as ProfileRoutingDraftError {
             error = bounded.localizedDescription
         } catch let bounded as ProxyChainError {
@@ -942,6 +966,7 @@ struct ProfileProxyChainsView: View {
         } catch {
             self.error = "Proxy chains could not be saved. The previous configuration is still available."
         }
+        return false
     }
 
      

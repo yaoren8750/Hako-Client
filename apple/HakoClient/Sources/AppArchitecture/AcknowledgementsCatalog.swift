@@ -105,7 +105,7 @@ enum AcknowledgementsCatalog {
             role: "Reading the ASN and GeoIP databases."
         ),
         Highlight(
-            module: "gopkg.in/yaml.v3",
+            module: "go.yaml.in/yaml/v3",
             role: "Reading and writing your configuration."
         ),
         Highlight(
@@ -170,7 +170,7 @@ enum AcknowledgementsCatalog {
         ),
         SystemFramework(
             name: "BackgroundTasks",
-            usage: "BGTaskScheduler, refreshing subscriptions while the app is away."
+            usage: "BGTaskScheduler, refreshing profile URLs while the app is away."
         ),
         SystemFramework(
             name: "WidgetKit, AppIntents",
@@ -178,7 +178,7 @@ enum AcknowledgementsCatalog {
         ),
         SystemFramework(
             name: "AVFoundation, PhotosUI",
-            usage: "AVCaptureSession and PHPickerViewController, for reading a subscription QR code."
+            usage: "AVCaptureSession and PHPickerViewController, for reading a profile URL QR code."
         ),
         SystemFramework(
             name: "UniformTypeIdentifiers",

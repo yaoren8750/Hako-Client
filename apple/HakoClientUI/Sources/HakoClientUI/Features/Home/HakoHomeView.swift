@@ -124,7 +124,6 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    @State private var section: HakoHomeSection
     @State private var favoriteCards: [HakoHomeCard]
     @State private var trafficScope: HakoHomeTrafficScope
     @State private var showsCardCustomization = false
@@ -146,7 +145,6 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
         self.palette = palette
         self.customizationPresentation = customizationPresentation
         self.icon = icon
-        _section = State(initialValue: snapshot.home.initialSection)
         _favoriteCards = State(initialValue: snapshot.home.favoriteCards)
         _trafficScope = State(initialValue: snapshot.home.trafficScope)
     }
@@ -156,7 +154,6 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
         Group {
             if regularShellScrollsContent {
                 homeContent
-                    .id(section)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("home.root")
             } else {
@@ -238,8 +235,11 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
         }
     }
 
-    @ViewBuilder
-    private var homeScrollView: some View {
+     
+     
+     
+     
+    private var homeScrollView: AnyView {
          
          
          
@@ -260,22 +260,29 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
                             .frame(height: headerExpansionDistance)
                     }
                     homeContent
-                        .id(section)
                 }
-            }
-            .onChange(of: section) { _ in
-                headerCompaction.reset()
-                proxy.scrollTo(hakoHomeTopAnchor, anchor: .top)
             }
         }
         .accessibilityIdentifier("home.root")
 
-        if #available(iOS 17.0, macOS 14.0, tvOS 17.0, *) {
-            scroll.scrollClipDisabled()
-                .hakoTracksScrollDistance { updateHeaderCompaction(for: $0) }
-        } else {
-            scroll
+        if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
+             
+             
+             
+             
+            return AnyView(
+                scroll.scrollClipDisabled()
+                    .scrollEdgeEffectStyle(.soft, for: .top)
+                    .hakoTracksScrollDistance { updateHeaderCompaction(for: $0) }
+            )
         }
+        if #available(iOS 17.0, macOS 14.0, tvOS 17.0, *) {
+            return AnyView(
+                scroll.scrollClipDisabled()
+                    .hakoTracksScrollDistance { updateHeaderCompaction(for: $0) }
+            )
+        }
+        return AnyView(scroll)
     }
 
      
@@ -321,10 +328,9 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
     private var homeCards: some View {
         if snapshot.selectedProfile == nil {
             unavailableProfileCard
-        } else if section == .common {
-            commonContent
         } else {
-            adjustmentContent
+            commonContent
+            runtimeConfigurationContent
         }
     }
 
@@ -339,7 +345,6 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
     private func topBar(compaction: CGFloat) -> some View {
         VStack(spacing: 0) {
             header(compaction: compaction)
-            sectionPicker
         }
     }
 
@@ -445,7 +450,7 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
                  
                  
                  
-                icon(.trayFullFill)
+                icon(.sparklesRectangleStackFill)
                     .font(
                         dynamicTypeSize.isAccessibilitySize
                             ? .headline.weight(.bold)
@@ -455,10 +460,7 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
                  
                  
                  
-                (
-                    snapshot.selectedProfile.map { Text(verbatim: $0.label) }
-                        ?? Text(hako: "Not Set Up")
-                )
+                Text(hako: profileChip.title)
                 .font(
                     dynamicTypeSize.isAccessibilitySize
                         ? .headline.weight(.bold)
@@ -466,23 +468,43 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
                 )
                 .foregroundStyle(.primary)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                 
+                 
+                 
+                .minimumScaleFactor(0.85)
+                .allowsTightening(true)
                 .fixedSize(
                     horizontal: false,
                     vertical: dynamicTypeSize.isAccessibilitySize
                 )
-                icon(.chevronDown)
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.secondary)
+                switch profileChip.accessory {
+                case .picker:
+                    icon(.chevronDown)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.secondary)
+                case .add:
+                     
+                     
+                     
+                    icon(.plusCircle)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.tint)
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityLabel(
-            snapshot.selectedProfile?.label ?? "Not Set Up"
-        )
+        .accessibilityLabel(Text(hako: profileChip.title))
         .accessibilityHint("Opens Profiles")
         .accessibilityIdentifier("home.profile.open")
+    }
+
+    private var profileChip: HakoHomeProfileChipPresentation {
+        HakoHomeProfileChipPresenter.presentation(
+            selectedProfile: snapshot.selectedProfile,
+            isSystemFallback: snapshot.home.selectedProfileIsSystemFallback
+        )
     }
 
      
@@ -564,6 +586,7 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
                 snapshot.home.traffic.coreStartedAtUnixSeconds,
             isConnected: snapshot.home.connection.phase == .connected,
             isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+                && snapshot.home.connection.title != "VPN Authorization"
         )
     }
 
@@ -585,7 +608,13 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
     private var connectionReason: some View {
         if let issue = snapshot.home.connection.issue {
             Button {
-                send(.showConnectionIssue)
+                 
+                 
+                 
+                 
+                send(issue.kind.lineTapResetsVPNProfile
+                    ? .resetVPNProfile
+                    : .showConnectionIssue)
             } label: {
                  
                  
@@ -626,6 +655,13 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
             .foregroundStyle(Self.issueTint)
             .accessibilityIdentifier("home.connection.reason")
             .accessibilityValue(issue.message)
+             
+             
+            .accessibilityHint(
+                issue.kind.lineTapResetsVPNProfile
+                    ? Text(hako: .copy("Reinstalls the VPN profile"))
+                    : Text("")
+            )
         }
     }
 
@@ -743,15 +779,9 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
         }
     }
 
-    private var sectionPicker: some View {
-        HakoHomeSectionTabs(section: $section, separator: palette.separator)
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, HakoTheme.Spacing.standard)
-    }
-
     private var commonContent: some View {
         Group {
-            ForEach(favoriteCards) { card in
+            ForEach(HakoHomeCatalog.visibleCards(favoriteCards, mode: HakoHomeCatalog.HakoHomeCardMode(rawValue: snapshot.home.routing.mode.rawValue) ?? .rule)) { card in
                  
                  
                  
@@ -874,19 +904,8 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
         }
     }
 
-    private var adjustmentContent: some View {
+    private var runtimeConfigurationContent: some View {
         Group {
-            ForEach(snapshot.home.adjustments, id: \.module) { item in
-                HakoHomeAdjustmentCard(
-                    snapshot: item,
-                    palette: palette,
-                    icon: icon
-                ) { action in
-                    send(.openAdjustment(action))
-                }
-                .equatable()
-            }
-
             Button {
                 send(.openRuntimeConfiguration)
             } label: {
@@ -953,13 +972,13 @@ public struct HakoHomeView<Icon: View>: View, Equatable {
 }
 
 private struct HakoHomeGlassSpinnerStyle: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
+     
+     
+    func body(content: Content) -> AnyView {
         if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
-            content.buttonStyle(.glass)
-        } else {
-            content.buttonStyle(.bordered)
+            return AnyView(content.buttonStyle(.glass))
         }
+        return AnyView(content.buttonStyle(.bordered))
     }
 }
 
@@ -999,8 +1018,11 @@ private struct HakoHomePrimaryPageCard<Content: View>: View {
         self.content = content()
     }
 
-    @ViewBuilder
-    var body: some View {
+     
+     
+     
+     
+    var body: AnyView {
          
          
          
@@ -1047,7 +1069,10 @@ private struct HakoHomePrimaryPageCard<Content: View>: View {
             if HakoPerfExperiment.suppressesGlass { return false }
             if HakoPlatformLayout.primaryPageCardUsesLiquidGlass { return true }
             if HakoPlatformLayout.pageUsesSystemSettingsIdiom { return false }
-            return true
+             
+             
+             
+            return HakoPlatformLayout.touchCardWearsSystemMaterial
         }()
 
          
@@ -1072,20 +1097,21 @@ private struct HakoHomePrimaryPageCard<Content: View>: View {
              
              
              
-            padded
-                .clipShape(
-                    RoundedRectangle(
-                        cornerRadius: cardCorner,
-                        style: .continuous
+            return AnyView(
+                padded
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: cardCorner,
+                            style: .continuous
+                        )
                     )
-                )
-                .glassEffect(
-                    isInteractive ? .regular.interactive() : .regular,
-                    in: .rect(cornerRadius: cardCorner)
-                )
-        } else {
-            traditionalCard
+                    .glassEffect(
+                        isInteractive ? .regular.interactive() : .regular,
+                        in: .rect(cornerRadius: cardCorner)
+                    )
+            )
         }
+        return AnyView(traditionalCard)
     }
 }
 
@@ -1942,64 +1968,6 @@ private struct HakoHomeDomainCountCard<Icon: View>: View {
     }
 }
 
-private struct HakoHomeAdjustmentCard<Icon: View>: View {
-    let snapshot: HakoHomeAdjustmentSnapshot
-    let palette: HakoProductPalette
-    let icon: (HakoSymbol) -> Icon
-    let perform: (HakoHomeAdjustmentAction) -> Void
-
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    var body: some View {
-        HakoHomePrimaryPageCard(palette: palette) {
-            VStack(
-                alignment: .leading,
-                spacing: HakoTheme.Spacing.standard
-            ) {
-                HakoHomeCardTitle(
-                    cardTitle: snapshot.module.title,
-                    symbol: snapshot.module.symbol,
-                    icon: icon
-                )
-                Text(HakoCopy.key(snapshot.summary))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if !snapshot.module.actions.isEmpty {
-                    actions
-                }
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(
-            "home.card.adjust.\(snapshot.module.id)"
-        )
-    }
-
-    private var actions: some View {
-         
-         
-         
-         
-        HakoModuleEntries(
-            entries: snapshot.module.actions.map { action in
-                HakoModuleEntry(
-                    id: action.rawValue,
-                    title: action.title
-                ) {
-                    perform(action)
-                }
-            },
-            palette: palette,
-            stacked: dynamicTypeSize.isAccessibilitySize,
-            identifier: { "home.modify.\(snapshot.module.id).\($0.id)" }
-        )
-    }
-
-}
-
-
 private struct HakoHomeCardCustomizationView<Icon: View>: View {
     @Binding var cards: [HakoHomeCard]
     let palette: HakoProductPalette
@@ -2240,8 +2208,3 @@ extension HakoHomeDomainCountCard: @MainActor Equatable {
     }
 }
 
-extension HakoHomeAdjustmentCard: @MainActor Equatable {
-    static func == (a: Self, b: Self) -> Bool {
-        a.snapshot == b.snapshot && a.palette == b.palette
-    }
-}

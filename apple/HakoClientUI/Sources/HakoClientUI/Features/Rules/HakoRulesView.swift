@@ -315,11 +315,11 @@ public struct HakoRulesOverviewView<
         if !overview.buckets.isEmpty {
             HakoProductGroup(
                 .format(
-                    "Subscription Rules (%@)",
+                    "Rules (%@)",
                     [String(overview.inlineCount)]
                 ),
                 footer:
-                    "Grouped by destination. Updates from the subscription replace these rules.",
+                    "Grouped by destination. What the tunnel runs: the profile's rules with your custom rules and the override script applied.",
                 palette: palette
             ) {
                  
@@ -744,7 +744,7 @@ public struct HakoRulesOverviewView<
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if HakoRuleRowLayout.showsTypeLine(payload: rule.payload) {
-                    Text(rule.type)
+                    Text(hako: .verbatim(rule.typeLine(locale: locale)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -817,6 +817,28 @@ struct HakoRuleBucketLazyPage: View {
     @Environment(\.locale) private var locale
 
     var body: some View {
+        edgeFaded(scroll)
+         
+         
+         
+        .environment(\.hakoPageDrawsOwnCards, true)
+        .accessibilityIdentifier("rules.bucket.\(bucket.target)")
+    }
+
+     
+     
+     
+     
+     
+     
+    private func edgeFaded(_ scroll: some View) -> AnyView {
+        if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
+            return AnyView(scroll.scrollEdgeEffectStyle(.soft, for: .top))
+        }
+        return AnyView(scroll)
+    }
+
+    private var scroll: some View {
         let rows = Array(bucket.rules.prefix(Self.renderedRowCap))
         let lastIndex = rows.count - 1
         return ScrollView {
@@ -894,11 +916,6 @@ struct HakoRuleBucketLazyPage: View {
              
             .padding(.horizontal, HakoTheme.Spacing.standard)
         }
-         
-         
-         
-        .environment(\.hakoPageDrawsOwnCards, true)
-        .accessibilityIdentifier("rules.bucket.\(bucket.target)")
     }
 
      
@@ -940,7 +957,7 @@ struct HakoRuleBucketLazyPage: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if HakoRuleRowLayout.showsTypeLine(payload: rule.payload) {
-                    Text(rule.type)
+                    Text(hako: .verbatim(rule.typeLine(locale: locale)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -1133,7 +1150,7 @@ extension HakoProfileRulesView {
             Button("Delete", role: .destructive) { deleteSelectedRules() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("They are removed from this profile and cannot be brought back.")
+            Text("The selected rules will be removed when you save. Discard changes to keep them.")
         }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -1155,11 +1172,7 @@ extension HakoProfileRulesView {
                     Button {
                         persist()
                     } label: {
-                        if dynamicTypeSize.isAccessibilitySize {
-                            icon(.checkmark)
-                        } else {
-                            Text("Save")
-                        }
+                        HakoActionProgressLabel(.copy("Save"), isBusy: isSaving)
                     }
                     .disabled(isSaving)
                     .accessibilityLabel("Save")
@@ -1176,8 +1189,7 @@ extension HakoProfileRulesView {
             isDirty: draft != openedWith,
             isBusy: isSaving,
             save: { completion in
-                persist()
-                completion(true)
+                persist(then: completion)
             },
             discard: { draft = openedWith }
         )
@@ -1187,7 +1199,7 @@ extension HakoProfileRulesView {
                 HakoModalActionBar(
                     primaryTitle: "Save",
                     primaryDisabled: isSaving,
-                    onPrimary: persist
+                    onPrimary: { persist() }
                 )
             }
         }
@@ -1195,6 +1207,9 @@ extension HakoProfileRulesView {
             HakoRuleBuilderView(
                 rule: target.rule,
                 options: loadedPolicyOptions ?? editor.policyOptions,
+                 
+                 
+                delete: target.rowID.map { id in { draftRows.remove(id, from: &draft.rules) } },
                 initialRoute: target.initialRoute,
                 runtimeProfile: runtimeProfile,
                 palette: palette,
@@ -1855,8 +1870,10 @@ extension HakoProfileRulesView {
         )
     }
 
-    private func persist() {
-        guard !isSaving else { return }
+     
+     
+    private func persist(then: ((Bool) -> Void)? = nil) {
+        guard !isSaving else { then?(false); return }
         isSaving = true
         error = ""
         Task {
@@ -1865,8 +1882,9 @@ extension HakoProfileRulesView {
                     .rules(.saveProfileRules(draft)),
                     allowedBy: snapshot
                 )
-                dismissPresentation()
+                if let then { then(true) } else { dismissPresentation() }
             } catch {
+                then?(false)
                 self.error =
                     "Rules could not be saved. The previous configuration is still available."
             }
@@ -2051,8 +2069,17 @@ private extension String {
  
  
 public struct HakoRuleEditorView<Icon: View>: View {
+    private let delete: (() -> Void)?
+    private let showsPersonalMetadata: Bool
+     
+     
+     
+    private let showsTarget: Bool
     private let rule: HakoPersonalRuleSnapshot
     private let options: HakoRulePolicyOptions
+     
+     
+    private let createGroup: ((@escaping (String?) -> Void) -> AnyView)?
     private let initialRoute: HakoRuleBuilderRoute?
     private let runtimeProfile: HakoAppleRuntimeProfile
     private let palette: HakoProductPalette
@@ -2064,7 +2091,12 @@ public struct HakoRuleEditorView<Icon: View>: View {
     public init(
         rule: HakoPersonalRuleSnapshot,
         options: HakoRulePolicyOptions = .empty,
+        showsPersonalMetadata: Bool = true,
+        showsTarget: Bool = true,
+        createGroup: ((@escaping (String?) -> Void) -> AnyView)? = nil,
+        delete: (() -> Void)? = nil,
         initialRoute: HakoRuleBuilderRoute? = nil,
+        pageTitle: String = "Rule",
         runtimeProfile: HakoAppleRuntimeProfile,
         palette: HakoProductPalette,
         loadGeoValues: @escaping
@@ -2072,21 +2104,35 @@ public struct HakoRuleEditorView<Icon: View>: View {
         @ViewBuilder icon: @escaping (HakoSymbol) -> Icon,
         save: @escaping (HakoPersonalRuleSnapshot) -> Void
     ) {
+        self.delete = delete
+        self.showsPersonalMetadata = showsPersonalMetadata
+        self.showsTarget = showsTarget
+        self.createGroup = createGroup
         self.rule = rule
         self.options = options
         self.initialRoute = initialRoute
+        self.pageTitle = pageTitle
         self.runtimeProfile = runtimeProfile
         self.palette = palette
         self.loadGeoValues = loadGeoValues
         self.icon = icon
         self.save = save
     }
+     
+     
+     
+    private let pageTitle: String
 
     public var body: some View {
         HakoRuleBuilderView(
             rule: rule,
             options: options,
+            showsPersonalMetadata: showsPersonalMetadata,
+            showsTarget: showsTarget,
+            createGroup: createGroup,
+            delete: delete,
             initialRoute: initialRoute,
+            pageTitle: pageTitle,
             runtimeProfile: runtimeProfile,
             palette: palette,
             loadGeoValues: loadGeoValues,
@@ -2097,6 +2143,11 @@ public struct HakoRuleEditorView<Icon: View>: View {
 }
 
 private struct HakoRuleBuilderView<Icon: View>: View {
+    let delete: (() -> Void)?
+    let showsPersonalMetadata: Bool
+    let showsTarget: Bool
+    let createGroup: ((@escaping (String?) -> Void) -> AnyView)?
+    let pageTitle: String
     let options: HakoRulePolicyOptions
     let initialRoute: HakoRuleBuilderRoute?
     let runtimeProfile: HakoAppleRuntimeProfile
@@ -2131,7 +2182,14 @@ private struct HakoRuleBuilderView<Icon: View>: View {
         content: "tcp"
     )
     @State private var addingCondition = false
-    @State private var error = ""
+     
+     
+     
+    @State private var error: HakoDisplayText?
+     
+     
+     
+    @State private var additionalParams: [String]
     @State private var lastAction: HakoStructuredRule.Action
     @State private var autoRoute: HakoRuleBuilderRoute?
     @FocusState private var contentFieldFocused: Bool
@@ -2141,7 +2199,12 @@ private struct HakoRuleBuilderView<Icon: View>: View {
     init(
         rule: HakoPersonalRuleSnapshot,
         options: HakoRulePolicyOptions,
+        showsPersonalMetadata: Bool = true,
+        showsTarget: Bool = true,
+        createGroup: ((@escaping (String?) -> Void) -> AnyView)? = nil,
+        delete: (() -> Void)? = nil,
         initialRoute: HakoRuleBuilderRoute?,
+        pageTitle: String = "Rule",
         runtimeProfile: HakoAppleRuntimeProfile,
         palette: HakoProductPalette,
         loadGeoValues: @escaping
@@ -2149,6 +2212,11 @@ private struct HakoRuleBuilderView<Icon: View>: View {
         icon: @escaping (HakoSymbol) -> Icon,
         save: @escaping (HakoPersonalRuleSnapshot) -> Void
     ) {
+        self.delete = delete
+        self.showsPersonalMetadata = showsPersonalMetadata
+        self.showsTarget = showsTarget
+        self.createGroup = createGroup
+        self.pageTitle = pageTitle
         self.options = options
         self.initialRoute = initialRoute
         self.runtimeProfile = runtimeProfile
@@ -2165,11 +2233,12 @@ private struct HakoRuleBuilderView<Icon: View>: View {
         _target = State(
             initialValue:
                 parsed?.target
-                ?? options.groups.first?.name
+                ?? options.pickableGroups.first?.name
                 ?? "DIRECT"
         )
         _noResolve = State(initialValue: parsed?.noResolve ?? false)
         _src = State(initialValue: parsed?.src ?? false)
+        _additionalParams = State(initialValue: parsed?.additionalParams ?? [])
         _rawMode = State(
             initialValue: !rule.raw.isEmpty && parsed == nil
         )
@@ -2194,6 +2263,14 @@ private struct HakoRuleBuilderView<Icon: View>: View {
         HakoSingleColumnNavigationContainer {
             HakoModalEditorBody {
                 builderSections
+                if let delete {
+                    Section {
+                        Button("Delete This Rule", role: .destructive) {
+                            delete()
+                            (modalDismiss ?? { dismiss() })()
+                        }.accessibilityIdentifier("configuration.rule.delete-current")
+                    }
+                }
             }
             .onChange(of: action) { updated in
                 content = updated == .network ? "tcp" : ""
@@ -2205,18 +2282,18 @@ private struct HakoRuleBuilderView<Icon: View>: View {
                 }
                 noResolve = false
                 src = false
+                additionalParams = []
                 lastAction = updated
             }
             .background(autoRouteLinks.opacity(0))
             .onAppear {
                 autoRoute = initialRoute
             }
-            .hakoPageTitle("Rule")
+            .hakoPageTitle(.copy(pageTitle))
             .hakoRegistersDeparture(
             isDirty: !openedWith.isEmpty && currentFingerprint != openedWith,
             save: { completion in
-                submit()
-                completion(true)
+                completion(submit())
             },
             discard: {}
         )
@@ -2266,9 +2343,9 @@ private struct HakoRuleBuilderView<Icon: View>: View {
         } else {
             structuredSections
         }
-        if !error.isEmpty {
+        if let error {
             Section {
-                Text(error)
+                Text(hako: error)
                     .foregroundStyle(.red)
                     .fixedSize(
                         horizontal: false,
@@ -2281,11 +2358,13 @@ private struct HakoRuleBuilderView<Icon: View>: View {
     @ViewBuilder
     private var rawSections: some View {
         Section {
+            if showsPersonalMetadata {
             HakoSettingsToggleRow(
                 Text("Enabled"),
                 isOn: $enabled
             )
             .accessibilityIdentifier("profile-rule.enabled")
+            }
         }
         Section {
             rawRuleField
@@ -2296,21 +2375,29 @@ private struct HakoRuleBuilderView<Icon: View>: View {
                 "This rule is not available in the structured editor. Imported source rules are never rewritten."
             )
         }
-        commentSection
+        if showsPersonalMetadata { commentSection }
     }
 
     @ViewBuilder
     private var structuredSections: some View {
         Section {
+            if showsPersonalMetadata {
             HakoSettingsToggleRow(
                 Text("Enabled"),
                 isOn: $enabled
             )
             .accessibilityIdentifier("profile-rule.enabled")
+            }
             HakoRoutedViewLink {
                 HakoRuleTypeSelectionView(
                     selection: $action,
                     runtimeProfile: runtimeProfile,
+                     
+                     
+                     
+                     
+                     
+                    excludesLogic: !showsTarget,
                     icon: icon
                         )
                         .hakoPushedDetailPage()
@@ -2368,6 +2455,7 @@ private struct HakoRuleBuilderView<Icon: View>: View {
             }
         }
 
+        if showsTarget {
         Section("Target") {
             if action == .subRule {
                 if HakoPlatformLayout.modalEditorUsesGroupedForm {
@@ -2421,6 +2509,7 @@ private struct HakoRuleBuilderView<Icon: View>: View {
                     HakoRulePolicyPickerView(
                         options: options,
                         current: target,
+                        createGroup: createGroup,
                         icon: icon
                     ) {
                         target = $0
@@ -2433,6 +2522,7 @@ private struct HakoRuleBuilderView<Icon: View>: View {
                     "profile-rule.target.picker"
                 )
             }
+        }
         }
 
         if action.supportsNoResolve || action.supportsSrc {
@@ -2466,7 +2556,7 @@ private struct HakoRuleBuilderView<Icon: View>: View {
             }
         }
 
-        commentSection
+        if showsPersonalMetadata { commentSection }
     }
 
     private var commentSection: some View {
@@ -2923,7 +3013,7 @@ private struct HakoRuleBuilderView<Icon: View>: View {
         if rawMode {
             return !rawText.trimmingCharacters(in: .whitespaces).isEmpty
         }
-        return !content.trimmingCharacters(in: .whitespaces).isEmpty
+        return !action.needsContent || !content.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
      
@@ -2942,10 +3032,12 @@ private struct HakoRuleBuilderView<Icon: View>: View {
             String(src), String(rawMode), rawText,
             String(noResolve), comment,
             String(describing: logicConditions), String(enabled),
+            String(describing: additionalParams),
         ].joined(separator: "\u{1F}")
     }
 
-    private func submit() {
+    @discardableResult
+    private func submit() -> Bool {
         let candidate: String
         if rawMode {
             candidate = rawText.trimmingCharacters(
@@ -2963,15 +3055,15 @@ private struct HakoRuleBuilderView<Icon: View>: View {
                 guard conditions.count >= minimum else {
                     error =
                         minimum == 1
-                        ? "Add the condition first."
-                        : "Add at least two conditions."
-                    return
+                        ? .copy("Add the condition first.")
+                        : .copy("Add at least two conditions.")
+                    return false
                 }
                 guard conditions.allSatisfy({
                     !$0.content.isEmpty
                 }) else {
-                    error = "Every condition needs a value."
-                    return
+                    error = .copy("Every condition needs a value.")
+                    return false
                 }
                 effectiveContent =
                     HakoLogicExpressionCodec.serialize(
@@ -2986,19 +3078,29 @@ private struct HakoRuleBuilderView<Icon: View>: View {
                     in: .whitespaces
                 ),
                 noResolve: noResolve,
-                src: src
+                src: src,
+                additionalParams: additionalParams
             )
             guard !action.needsContent || !rule.content.isEmpty
             else {
-                error = "\(action.contentLabel) is required."
-                return
+                error = .formatCopy("%@ is required.", [action.contentLabel])
+                return false
             }
-            guard !rule.target.isEmpty else {
-                error = "\(action.targetLabel) is required."
-                return
+            guard !showsTarget || !rule.target.isEmpty else {
+                error = .formatCopy("%@ is required.", [action.targetLabel])
+                return false
             }
-            candidate = rule.rawValue
+             
+             
+            guard showsTarget || action.category != .logic else {
+                error = .copy("A rule set cannot carry MATCH or a logic rule. Pick another type.")
+                return false
+            }
+            candidate = showsTarget ? rule.rawValue : Self.payloadLine(rule)
         }
+         
+         
+        let judged = showsTarget || rawMode ? candidate : candidate + ",DIRECT"
         let disallowReason =
             rawMode
             ? HakoStructuredRule.rawDisallowReason(
@@ -3006,14 +3108,16 @@ private struct HakoRuleBuilderView<Icon: View>: View {
                 runtimeProfile: runtimeProfile
             )
             : HakoStructuredRule.disallowReason(
-                candidate,
+                judged,
                 runtimeProfile: runtimeProfile
             )
         if let reason = disallowReason
         {
-            error =
-                "\(reason) The previous rule is unchanged."
-            return
+             
+             
+             
+            error = .formatCopy("%@ The previous rule is unchanged.", [reason])
+            return false
         }
         save(
             HakoPersonalRuleSnapshot(
@@ -3026,6 +3130,18 @@ private struct HakoRuleBuilderView<Icon: View>: View {
         )
          
         (modalDismiss ?? { dismiss() })()
+        return true
+    }
+
+     
+     
+    static func payloadLine(_ rule: HakoStructuredRule) -> String {
+        var fields = [rule.action.rawValue]
+        if rule.action.needsContent { fields.append(rule.content) }
+        if rule.action.supportsSrc, rule.src { fields.append("src") }
+        if rule.action.supportsNoResolve, rule.noResolve { fields.append("no-resolve") }
+        fields.append(contentsOf: rule.additionalParams)
+        return fields.joined(separator: ",")
     }
 }
 
@@ -3103,83 +3219,81 @@ private struct HakoRuleTypeSelectionView<Icon: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                ForEach(visibleCategories) { category in
-                    Section {
-                        ForEach(
-                            HakoStructuredRule.availableActions(
-                                for: runtimeProfile
-                            )
-                                .filter {
-                                    $0.category == category
-                                        && (!excludesLogic
-                                            || (
-                                                $0.category != .logic
-                                                    && $0 != .match
-                                            ))
-                                }
-                        ) { value in
-                            Button {
-                                selection = value
-                                dismissRoute()
-                            } label: {
-                                HStack {
-                                    VStack(
-                                        alignment: .leading,
-                                        spacing: 3
-                                    ) {
-                                        Text(value.rawValue)
-                                            .font(.body.monospaced())
-                                            .foregroundStyle(.primary)
-                                        Text(hako: .copy(value.summary))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .fixedSize(
-                                                horizontal: false,
-                                                vertical: true
-                                            )
-                                         
-                                         
-                                         
-                                         
-                                        if let note = HakoStructuredRule.platformNote(
-                                            for: value.rawValue,
-                                            runtimeProfile: runtimeProfile
-                                        ) {
-                                            Text(hako: note)
-                                                .font(.caption2)
-                                                .foregroundStyle(.orange)
-                                                .fixedSize(horizontal: false, vertical: true)
-                                        }
-                                    }
-                                    Spacer(
-                                        minLength:
-                                            HakoTheme.Spacing.compact
-                                    )
-                                    HakoSelectionMark(
-                                        isSelected:
-                                            selection == value
-                                    )
-                                }
-                                .frame(
-                                    maxWidth: .infinity,
-                                    minHeight: HakoTheme.Control.fullWidthRowMinHeightOnItsOwnPlatform,
-                                    alignment: .leading
-                                )
-                                .contentShape(Rectangle())
+        Form {
+            ForEach(visibleCategories) { category in
+                Section {
+                    ForEach(
+                        HakoStructuredRule.availableActions(
+                            for: runtimeProfile
+                        )
+                            .filter {
+                                $0.category == category
+                                    && (!excludesLogic
+                                        || (
+                                            $0.category != .logic
+                                                && $0 != .match
+                                        ))
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier(
-                                "rule-type.\(value.rawValue)"
+                    ) { value in
+                        Button {
+                            selection = value
+                            dismissRoute()
+                        } label: {
+                            HStack {
+                                VStack(
+                                    alignment: .leading,
+                                    spacing: 3
+                                ) {
+                                    Text(value.rawValue)
+                                        .font(.body.monospaced())
+                                        .foregroundStyle(.primary)
+                                    Text(hako: .copy(value.summary))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(
+                                            horizontal: false,
+                                            vertical: true
+                                        )
+                                     
+                                     
+                                     
+                                     
+                                    if let note = HakoStructuredRule.platformNote(
+                                        for: value.rawValue,
+                                        runtimeProfile: runtimeProfile
+                                    ) {
+                                        Text(hako: note)
+                                            .font(.caption2)
+                                            .foregroundStyle(.orange)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                Spacer(
+                                    minLength:
+                                        HakoTheme.Spacing.compact
+                                )
+                                HakoSelectionMark(
+                                    isSelected:
+                                        selection == value
+                                )
+                            }
+                            .frame(
+                                maxWidth: .infinity,
+                                minHeight: HakoTheme.Control.fullWidthRowMinHeightOnItsOwnPlatform,
+                                alignment: .leading
                             )
+                            .contentShape(Rectangle())
                         }
-                    } header: {
-                        Text(hako: .copy(category.title))
-                    } footer: {
-                        if let note = categoryNote(category) {
-                            Text(note)
-                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier(
+                            "rule-type.\(value.rawValue)"
+                        )
+                    }
+                } header: {
+                    Text(hako: .copy(category.title))
+                } footer: {
+                    if let note = categoryNote(category) {
+                        Text(note)
                     }
                 }
             }
@@ -3482,6 +3596,57 @@ private struct HakoRuleConditionEditorView<Icon: View>: View {
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
+public enum HakoRulePolicyBuiltIns {
+    public static let rule: [(name: String, caption: String)] = [
+        ("DIRECT", "Do not proxy; connect directly."),
+        ("REJECT", "Abort the request."),
+        ("REJECT-DROP", "Drop silently, without answering."),
+        ("PASS", "Skip this rule; keep matching the ones below."),
+        ("PASS-RULE", "Skip this rule but stay inside the sub-rule list."),
+        ("MATCH", "Follow this profile's final MATCH policy."),
+    ]
+}
+
+ 
+ 
+ 
+ 
+private struct HakoRulePolicyGroupCreationPage: View {
+    let make: (@escaping (String?) -> Void) -> AnyView
+    let onCreated: (String) -> Void
+     
+     
+     
+    @State private var dismiss = HakoDismissHandle()
+    @Environment(\.hakoPopRoute) private var popRoute
+
+    var body: some View {
+        make { name in
+            leave()
+            if let name, !name.isEmpty { onCreated(name) }
+        }
+        .hakoCapturesDismiss(dismiss)
+    }
+
+    private func leave() {
+#if os(macOS)
+        if let popRoute {
+            popRoute(HakoPopToken())
+        } else {
+            dismiss()
+        }
+#else
+        dismiss()
+#endif
+    }
+}
+
 public struct HakoRulePolicyPickerView<Icon: View>: View {
     let title: String
     let builtIns: [(name: String, caption: String)]
@@ -3490,18 +3655,16 @@ public struct HakoRulePolicyPickerView<Icon: View>: View {
     let offersGlobal: Bool
     let options: HakoRulePolicyOptions
     let current: String
+     
+     
+     
+     
+    let createGroup: ((@escaping (String?) -> Void) -> AnyView)?
     let icon: (HakoSymbol) -> Icon
     let pick: (String) -> Void
 
     private static var ruleBuiltIns: [(name: String, caption: String)] {
-        [
-            ("DIRECT", "Do not proxy; connect directly."),
-            ("REJECT", "Abort the request."),
-            ("REJECT-DROP", "Drop silently, without answering."),
-            ("PASS", "Skip this rule; keep matching the ones below."),
-            ("PASS-RULE", "Skip this rule but stay inside the sub-rule list."),
-            ("MATCH", "Follow this profile's final MATCH policy."),
-        ]
+        HakoRulePolicyBuiltIns.rule
     }
 
     public init(
@@ -3512,6 +3675,7 @@ public struct HakoRulePolicyPickerView<Icon: View>: View {
         offersGlobal: Bool = true,
         options: HakoRulePolicyOptions,
         current: String,
+        createGroup: ((@escaping (String?) -> Void) -> AnyView)? = nil,
         icon: @escaping (HakoSymbol) -> Icon,
         pick: @escaping (String) -> Void
     ) {
@@ -3522,6 +3686,7 @@ public struct HakoRulePolicyPickerView<Icon: View>: View {
         self.offersGlobal = offersGlobal
         self.options = options
         self.current = current
+        self.createGroup = createGroup
         self.icon = icon
         self.pick = pick
     }
@@ -3536,62 +3701,109 @@ public struct HakoRulePolicyPickerView<Icon: View>: View {
     @State private var query = ""
 
     public var body: some View {
-        Form {
-            if !builtIns.isEmpty {
-                Section {
-                    ForEach(builtIns, id: \.name) { entry in
-                        policyRow(entry.name, caption: entry.caption)
-                    }
-                } header: {
-                    if let builtInsTitle {
-                        Text(hako: .copy(builtInsTitle))
-                    }
+        catalogue
+            .hakoProductModalSearchable(
+                text: $query,
+                prompt: Text("Search proxies")
+            )
+            .hakoPageTitle(.copy(title))
+            .hakoProductModalChild(
+                title: title,
+                searchText: $query
+            )
+            .hakoCapturesDismiss(dismiss)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @ViewBuilder
+    private var catalogue: some View {
+        if HakoPlatformLayout.pageUsesSystemSettingsIdiom {
+            List { sections }
+                .hakoMacSettingsList()
+        } else {
+            Form { sections }
+        }
+    }
+
+    @ViewBuilder
+    private var sections: some View {
+        if !builtIns.isEmpty {
+            Section {
+                ForEach(builtIns, id: \.name) { entry in
+                    policyRow(entry.name, caption: entry.caption)
                 }
-            }
-            if !filteredGroups.isEmpty || query.isEmpty {
-                Section("Groups") {
-                    ForEach(filteredGroups) {
-                        policyRow($0.name, caption: $0.type)
-                    }
-                    if offersGlobal,
-                        !options.groups.contains(where: {
-                        $0.name == "GLOBAL"
-                    }),
-                        query.isEmpty
-                            || "GLOBAL"
-                            .localizedCaseInsensitiveContains(query)
-                    {
-                        policyRow(
-                            "GLOBAL",
-                            caption: "Kernel built-in group"
-                        )
-                    }
-                }
-            }
-            if !filteredProxies.isEmpty {
-                Section("Proxies") {
-                    ForEach(filteredProxies) {
-                        policyRow($0.name, caption: $0.type)
-                    }
+            } header: {
+                if let builtInsTitle {
+                    Text(hako: .copy(builtInsTitle))
                 }
             }
         }
-        .hakoProductModalSearchable(
-            text: $query,
-            prompt: Text("Search proxies")
-        )
-        .hakoPageTitle(.copy(title))
-        .hakoProductModalChild(
-            title: title,
-            searchText: $query
-        )
-        .hakoCapturesDismiss(dismiss)
+        if !filteredGroups.isEmpty || query.isEmpty {
+            Section("Groups") {
+                ForEach(filteredGroups) {
+                    policyRow($0.name, caption: $0.type)
+                }
+                if offersGlobal,
+                    !options.groups.contains(where: {
+                    $0.name == "GLOBAL"
+                }),
+                    query.isEmpty
+                        || "GLOBAL"
+                        .localizedCaseInsensitiveContains(query)
+                {
+                    policyRow(
+                        "GLOBAL",
+                        caption: "Kernel built-in group"
+                    )
+                }
+                if let createGroup, query.isEmpty {
+                     
+                     
+                     
+                     
+                     
+                     
+                    HakoRoutedViewLink {
+                        HakoRulePolicyGroupCreationPage(make: createGroup) { name in
+                            pick(name)
+                            dismissRoute()
+                        }
+                        .hakoPushedDetailPage()
+                    } label: {
+                        Label {
+                            Text(hako: .copy("Add Policy Group"))
+                        } icon: {
+                            Image(systemName: HakoSymbol.plus.rawValue)
+                        }
+                    }
+                    .accessibilityIdentifier("\(axPrefix).group.add")
+                }
+            }
+        }
+        if !filteredProxies.isEmpty {
+            Section("Proxies") {
+                ForEach(filteredProxies) {
+                    policyRow($0.name, caption: $0.type)
+                }
+            }
+        }
     }
 
     private var filteredGroups: [HakoRulePolicySnapshot] {
         query.isEmpty
-            ? options.groups
-            : options.groups.filter {
+            ? options.pickableGroups
+            : options.pickableGroups.filter {
                 $0.name.localizedCaseInsensitiveContains(query)
             }
     }
@@ -4106,6 +4318,18 @@ private struct HakoRuleCatalogUnavailableView: View {
         }
         .padding(HakoTheme.Spacing.section)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+extension HakoRuleLineSnapshot {
+     
+     
+     
+     
+    func typeLine(locale: Locale) -> String {
+        guard let entryCount else { return type }
+        let format = entryCount == 1 ? "%@ entry" : "%@ entries"
+        return type + " · " + HakoCopy.format(format, locale: locale, HakoCopy.count(entryCount, locale: locale))
     }
 }
 

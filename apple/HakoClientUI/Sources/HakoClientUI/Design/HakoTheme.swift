@@ -42,6 +42,11 @@ public enum HakoTheme {
 
          
         public static let minimumHitTarget: CGFloat = 44
+         
+         
+         
+         
+        public static let proxyRowTrailingControlWidth: CGFloat = 36
 
          
          
@@ -208,8 +213,23 @@ public enum HakoTheme {
                 return Spacing.row
 #endif
             }()
-            public static let minimumWidth: CGFloat = 240
-            public static let width: CGFloat = 256
+            public static let minimumWidth: CGFloat = 220
+             
+             
+             
+             
+             
+             
+             
+             
+             
+            public static let width: CGFloat = {
+#if os(macOS)
+                return 220
+#else
+                return 256
+#endif
+            }()
             public static let maximumWidth: CGFloat = 272
 
              

@@ -94,6 +94,11 @@ public struct HakoActivityPageView<
     private let connections: (String, Bool) -> Connections
     private let requests: (String, Bool) -> Requests
     private let logs: (String, Bool) -> Logs
+     
+     
+     
+     
+    private let showsLensStrip: Bool
 
      
      
@@ -106,6 +111,14 @@ public struct HakoActivityPageView<
      
      
     @State private var query = ""
+#if os(macOS)
+     
+     
+     
+     
+     
+    @State private var shownLens: HakoActivityLens
+#endif
 
 
     @Environment(\.locale) private var locale
@@ -130,13 +143,18 @@ public struct HakoActivityPageView<
         lens: Binding<HakoActivityLens>,
         palette: HakoProductPalette,
         searchFieldStyle: HakoActivitySearchFieldStyle = .standard,
+        showsLensStrip: Bool = true,
         @ViewBuilder connections: @escaping (String, Bool) -> Connections,
         @ViewBuilder requests: @escaping (String, Bool) -> Requests,
         @ViewBuilder logs: @escaping (String, Bool) -> Logs
     ) {
         _lens = lens
+#if os(macOS)
+        _shownLens = State(initialValue: lens.wrappedValue)
+#endif
         self.palette = palette
         self.searchFieldStyle = searchFieldStyle
+        self.showsLensStrip = showsLensStrip
         self.connections = connections
         self.requests = requests
         self.logs = logs
@@ -145,7 +163,7 @@ public struct HakoActivityPageView<
     public var body: some View {
         searchField(
             lensContent
-                .hakoPinnedTopBar { strip }
+                .hakoPinnedTopBar { if showsLensStrip { strip } }
         )
             .task(id: locale) { options = Self.options(in: locale) }
              
@@ -177,14 +195,42 @@ public struct HakoActivityPageView<
      
      
      
+     
+     
+     
+     
+     
+     
+     
     @ViewBuilder
     private var lensContent: some View {
+#if os(macOS)
+        ZStack {
+            resident(connections(query, shownLens == .connections), shown: shownLens == .connections)
+            resident(requests(query, shownLens == .requests), shown: shownLens == .requests)
+            if shownLens == .logs { logs(query, true) }
+        }
+        .onChange(of: lens) { next in
+            DispatchQueue.main.async { shownLens = next }
+        }
+#else
         switch lens {
         case .connections: connections(query, true)
         case .requests: requests(query, true)
         case .logs: logs(query, true)
         }
+#endif
     }
+
+#if os(macOS)
+    private func resident<Lens: View>(_ content: Lens, shown: Bool) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .allowsHitTesting(shown)
+            .accessibilityHidden(!shown)
+            .zIndex(shown ? 1 : 0)
+    }
+#endif
 
      
      
@@ -199,12 +245,18 @@ public struct HakoActivityPageView<
         case .phoneBottomBar:
             #if os(iOS)
             if #available(iOS 26, *) {
-                content
-                    .searchable(
-                        text: $query, placement: .toolbar,
-                        prompt: lens.searchPrompt
-                    )
-                    .searchToolbarBehavior(.minimize)
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                content.searchable(text: $query, placement: .toolbar, prompt: lens.searchPrompt)
+                    .toolbar { DefaultToolbarItem(kind: .search, placement: .bottomBar) }
+                    .toolbar(.hidden, for: .tabBar)
             } else {
                 content.searchable(
                     text: $query,

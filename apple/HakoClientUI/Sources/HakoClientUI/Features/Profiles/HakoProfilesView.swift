@@ -11,6 +11,8 @@ public enum HakoProfilesCapabilityDestination:
     case backupRestore
     case subscriptionSettings(Profile.ID)
     case sourceEditor(Profile.ID)
+    case configurationSources(Profile.ID)
+    case configurationRules(Profile.ID)
     case runtimePreview(Profile.ID)
      
      
@@ -19,6 +21,8 @@ public enum HakoProfilesCapabilityDestination:
      
     case rules(Profile.ID)
     case override(Profile.ID)
+    case network(Profile.ID)
+    case trust(Profile.ID)
 
      
      
@@ -42,8 +46,16 @@ public enum HakoProfilesCapabilityDestination:
             "rules|\(id.rawValue)"
         case .override(let id):
             "override|\(id.rawValue)"
+        case .network(let id):
+            "network|\(id.rawValue)"
+        case .trust(let id):
+            "trust|\(id.rawValue)"
         case .sourceEditor(let id):
             "source|\(id.rawValue)"
+        case .configurationSources(let id):
+            "configuration-sources|\(id.rawValue)"
+        case .configurationRules(let id):
+            "configuration-rules|\(id.rawValue)"
         case .runtimePreview(let id):
             "runtime|\(id.rawValue)"
         }
@@ -98,9 +110,15 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
     private let presentationClass: HakoPresentationClass
      
     private let showsDismissControl: Bool
+    private let isCenterSection: Bool
     private let palette: HakoProductPalette
     private let opensImportInitially: Bool
     private let pagePresentation: (AnyView) -> AnyView
+     
+     
+     
+     
+    private let detailPresentation: (AnyView) -> AnyView
     private let icon: (HakoSymbol) -> Icon
     private let capabilityContent:
         (HakoProfilesCapabilityDestination) -> CapabilityContent
@@ -115,6 +133,15 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
      
     private let listPresentation:
         ((HakoProfilesListPresentation) -> AnyView)?
+     
+     
+     
+     
+    private let quickAdd: (() -> AnyView)?
+     
+     
+     
+    private let quickAddLeads: Bool
 
      
      
@@ -127,6 +154,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
     @State private var activeCapability:
         HakoProfilesCapabilityDestination?
     @State private var showsReorder = false
+    @State private var showsBatchDetails = false
     @State private var displayedProfiles: [HakoProfileSnapshot]
     @State private var draggedProfileID: String?
     @State private var reorderDropTarget: HakoReorderDropTarget?
@@ -141,10 +169,14 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
         opensImportInitially: Bool = false,
         presentationClass: HakoPresentationClass,
         showsDismissControl: Bool = true,
+        isCenterSection: Bool = false,
         palette: HakoProductPalette,
         pagePresentation: @escaping (AnyView) -> AnyView = { $0 },
+        detailPresentation: @escaping (AnyView) -> AnyView = { $0 },
         listPresentation:
             ((HakoProfilesListPresentation) -> AnyView)? = nil,
+        quickAdd: (() -> AnyView)? = nil,
+        quickAddLeads: Bool = false,
         capabilityInterceptor:
             ((HakoProfilesCapabilityDestination) -> Bool)? = nil,
         @ViewBuilder icon: @escaping (HakoSymbol) -> Icon,
@@ -156,10 +188,14 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
         self.actions = actions
         self.presentationClass = presentationClass
         self.showsDismissControl = showsDismissControl
+        self.isCenterSection = isCenterSection
         self.palette = palette
         self.opensImportInitially = opensImportInitially
         self.pagePresentation = pagePresentation
+        self.detailPresentation = detailPresentation
         self.listPresentation = listPresentation
+        self.quickAdd = quickAdd
+        self.quickAddLeads = quickAddLeads
         self.capabilityInterceptor = capabilityInterceptor
         self.icon = icon
         self.capabilityContent = capabilityContent
@@ -170,6 +206,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
     }
 
     public var body: some View {
+        let _ = HakoPerf.count("profiles.body")
         pagePresentation(AnyView(routedRootPage))
             .hakoProductModal(
                 item: $activeCapability,
@@ -193,10 +230,11 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
             }
             .hakoProductModal(
                 isPresented: Binding(
-                    get: { snapshot.profiles.batchReport != nil },
+                    get: { snapshot.profiles.batchReport != nil && (!isCenterSection || showsBatchDetails) },
                     set: { presented in
                         if !presented {
-                            send(.dismissBatch)
+                            showsBatchDetails = false
+                            if !isCenterSection { send(.dismissBatch) }
                         }
                     }
                 ),
@@ -275,7 +313,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                     HakoLazyView {
                         switch route {
                         case .detail(let id):
-                            pagePresentation(
+                            pagePresentation(detailPresentation(
                                 AnyView(
                                     HakoProfileDetailView(
                                         profileID: id,
@@ -289,7 +327,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                                         capabilityContent: capabilityContent
                                     )
                                 )
-                            )
+                            ))
                             .hakoPushedDetailPage()
                             .environment(\.hakoPushRoute, pushRoute)
                             .environment(\.hakoPopRoute, popRoute)
@@ -348,21 +386,69 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
         }
     }
 
+     
+     
+     
+     
+    private var hidesEmptyProfilesSection: Bool {
+        displayedProfiles.isEmpty && quickAdd != nil && isCenterSection
+    }
+
+    @ViewBuilder
     private var ownRootPage: some View {
-        HakoProductRootPage(
-            palette: palette,
-            accessibilityIdentifier: "profile-center.root"
-        ) {
-            profilesSection
-            if snapshot.profiles.canCreateEmpty
-                || snapshot.profiles.canImport
-            {
-                addSection
+        if isCenterSection {
+            HakoConfigurationLibraryList(palette: palette, accessibilityIdentifier: "profile-center.root") {
+                if let quickAdd, isCenterSection, quickAddLeads { quickAdd() }
+                if !hidesEmptyProfilesSection { profilesSection }
+                if hasRemoteProfile, snapshot.profiles.canSyncAll {
+                    Section {
+                        HakoConfigurationUpdateButton(title: "Update All", isUpdating: snapshot.profiles.batchReport?.isRunning == true,
+                            disabled: false, action: { send(.syncAll) })
+                            .accessibilityIdentifier("profile-center.sync-all")
+                    } footer: {
+                         
+                         
+                         
+                         
+                        if let report = snapshot.profiles.batchReport {
+                            HStack(spacing: HakoTheme.Spacing.compact) {
+                                if report.isRunning {
+                                    Text("\(report.items.count) / \(report.expectedCount)").monospacedDigit()
+                                } else {
+                                    batchSummaryLine(report)
+                                }
+                                if report.needsAttention {
+                                    Button("Details") { showsBatchDetails = true }
+                                        .foregroundStyle(.tint)
+                                        .accessibilityIdentifier("profile-center.update-details")
+                                }
+                            }
+                            .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                            .accessibilityIdentifier("profile-center.update-status")
+                            .task(id: report.settledKey) {
+                                guard !report.isRunning, !report.needsAttention else { return }
+                                try? await Task.sleep(nanoseconds: Self.cleanBatchReportLingersNanoseconds)
+                                send(.dismissBatch)
+                            }
+                        }
+                    }
+                }
+                if let quickAdd, isCenterSection {
+                    if !quickAddLeads { quickAdd() }
+                } else if snapshot.profiles.canCreateEmpty || snapshot.profiles.canImport { addSection }
+                if snapshot.profiles.canBackup { dataSection }
+                failureSection
             }
-            if snapshot.profiles.canBackup {
-                dataSection
+        } else {
+            HakoProductRootPage(palette: palette, accessibilityIdentifier: "profile-center.root") {
+                if let quickAdd, isCenterSection, quickAddLeads { quickAdd() }
+                if !hidesEmptyProfilesSection { profilesSection }
+                if let quickAdd, isCenterSection {
+                    if !quickAddLeads { quickAdd() }
+                } else if snapshot.profiles.canCreateEmpty || snapshot.profiles.canImport { addSection }
+                if snapshot.profiles.canBackup { dataSection }
+                failureSection
             }
-            failureSection
         }
     }
 
@@ -413,6 +499,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                             } label: {
                                 icon(.arrowUpArrowDown)
                                     .hakoToolbarGlyph()
+                                    .hakoToolbarCapsuleEnd(.leading)
                             }
                             .accessibilityLabel("Reorder Profiles")
                             .accessibilityIdentifier("profile-center.reorder")
@@ -439,8 +526,9 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                             } label: {
                                 icon(.plusCircle)
                                     .hakoToolbarGlyph()
+                                    .hakoToolbarCapsuleEnd(showsReorderControl ? .trailing : [])
                             }
-                            .accessibilityLabel("Add Profile")
+                            .accessibilityLabel(HakoCopy.key(HakoConfigurationAddition.configuration.entryTitle))
                             .accessibilityIdentifier(
                                 "profile-center.add.toolbar"
                             )
@@ -482,7 +570,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
      
     @ViewBuilder
     private var profilesSection: some View {
-        if HakoPlatformLayout.pageUsesSystemSettingsIdiom {
+        if isCenterSection || HakoPlatformLayout.pageUsesSystemSettingsIdiom {
             Section {
                 if displayedProfiles.isEmpty {
                     profilesEmptyState
@@ -504,7 +592,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                         isBlocked: pendingSelectionID != nil
                             && pendingSelectionID != profile.id,
                         destination: {
-                            pagePresentation(
+                            pagePresentation(detailPresentation(
                             AnyView(
                                 HakoProfileDetailView(
                                     profileID: profile.id,
@@ -521,18 +609,18 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                                         capabilityContent
                                 )
                             )
-                            )
+                            ))
                         },
                         select: {
                             select(profile)
                         },
                         palette: palette,
-                        icon: icon
+                        icon: icon, presentsDetailModally: isCenterSection
                     )
                     .hakoDirectReorderRow(
                         id: profile.id.rawValue,
                         label: profile.label,
-                        enabled: snapshot.profiles.canReorder
+                        enabled: !isCenterSection && snapshot.profiles.canReorder
                             && displayedProfiles.count > 1,
                         draggedID: $draggedProfileID,
                         dropTarget: $reorderDropTarget,
@@ -578,7 +666,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                             )
                     }
 
-                    if index
+                    if !isCenterSection && index
                         < displayedProfiles.count - 1
                     {
                         HakoRowDivider()
@@ -588,6 +676,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                             )
                     }
                 }
+                .listRowInsets(isCenterSection ? EdgeInsets() : nil)
                 }
             } header: {
                 profilesHeader
@@ -600,8 +689,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
     private var profilesEmptyState: some View {
         HakoEmptyState(
             title: "No Profiles",
-            message:
-                "Create a direct profile or import a subscription to get started."
+            message: ""
         ) {
             icon(.listBulletRectangle)
         }
@@ -621,7 +709,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                     HakoEmptyState(
                         title: "No Profiles",
                         message:
-                            "Create a direct profile or import a subscription to get started."
+                            "Add a profile to choose its sources and rules."
                     ) {
                         icon(.listBulletRectangle)
                     }
@@ -650,7 +738,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                                 isBlocked: pendingSelectionID != nil
                                     && pendingSelectionID != profile.id,
                                 destination: {
-                                    pagePresentation(
+                                    pagePresentation(detailPresentation(
                                     AnyView(
                                         HakoProfileDetailView(
                                             profileID: profile.id,
@@ -667,13 +755,13 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                                                 capabilityContent
                                         )
                                     )
-                                    )
+                                    ))
                                 },
                                 select: {
                                     select(profile)
                                 },
                                 palette: palette,
-                                icon: icon
+                                icon: icon, presentsDetailModally: isCenterSection
                             )
                             .hakoDirectReorderRow(
                                 id: profile.id.rawValue,
@@ -749,33 +837,13 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
      
      
     private var addSection: some View {
-        HakoProfileGroup(
-            title: "Add",
-            palette: palette,
-            presentationClass: presentationClass
-        ) {
-            Button {
-                activeCapability = .importProfile
-            } label: {
-                HakoProfileActionRow(
-                    title: "Add Profile",
-                    subtitle: "Subscription link · config file · from scratch",
-                    symbol: .plusCircle,
-                    tint: .primary,
-                    icon: icon
-                )
-            }
-            .buttonStyle(.plain)
+        HakoConfigurationLibraryAddCard(kind: .configuration,
+            palette: palette, nativeList: isCenterSection, action: { activeCapability = .importProfile })
             .accessibilityIdentifier("profile-center.add")
-        }
     }
 
     private var dataSection: some View {
-        HakoProfileGroup(
-            title: "Data",
-            palette: palette,
-            presentationClass: presentationClass
-        ) {
+        HakoConfigurationLibraryCard(title: "Data", palette: palette, nativeList: isCenterSection) {
             HakoRoutedViewLink(
                 showsDisclosureIndicator: false
             ) {
@@ -783,9 +851,9 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
             } label: {
                 HakoProfileActionRow(
                     title: "iCloud Backup & Restore",
-                    subtitle: "Everything a profile needs to run",
                     symbol: .icloudAndArrowUp,
                     tint: .primary,
+                    showsDisclosure: !isCenterSection,
                     icon: icon
                 )
             }
@@ -835,7 +903,9 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
 
     @ViewBuilder
     private var profilesHeader: some View {
-        if dynamicTypeSize.isAccessibilitySize {
+        if isCenterSection {
+            HakoConfigurationLibraryHeader(title: .copy("Profiles"), count: displayedProfiles.count)
+        } else if dynamicTypeSize.isAccessibilitySize {
             accessibilityProfilesHeader
         } else {
             HStack(alignment: .firstTextBaseline) {
@@ -870,10 +940,28 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
             .foregroundStyle(.secondary)
     }
 
+     
+    private static var cleanBatchReportLingersNanoseconds: UInt64 { 4_000_000_000 }
+
+     
+     
+    private func batchSummaryLine(_ report: HakoProfileBatchReportSnapshot) -> Text {
+        var line = Text("")
+        for (index, part) in report.summaryParts.enumerated() {
+            line = index == 0 ? Text(hako: part) : line + Text(" · ") + Text(hako: part)
+        }
+        return line
+    }
+
+     
+     
+     
+     
+     
     private var hasRemoteProfile: Bool {
         snapshot.profiles.profiles.contains {
             $0.source == .remote
-        }
+        } || snapshot.profiles.libraryHasFetchableSource
     }
 
     private var syncAllButton: some View {
@@ -959,7 +1047,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
     @ViewBuilder
     private var requestedDetail: some View {
         if let requestedProfileID {
-            pagePresentation(
+            pagePresentation(detailPresentation(
                 AnyView(
                     HakoProfileDetailView(
                         profileID: requestedProfileID,
@@ -973,7 +1061,7 @@ public struct HakoProfilesView<Icon: View, CapabilityContent: View>: View {
                         capabilityContent: capabilityContent
                     )
                 )
-            )
+            ))
         } else {
             EmptyView()
         }
@@ -1133,26 +1221,32 @@ enum HakoProfileRoute: Hashable {
 }
 
  
- 
- 
-private struct HakoProfilesRootTitleModifier: ViewModifier {
-    let showsDismissControl: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if showsDismissControl {
-            content.navigationTitle("Profiles")
-        } else {
-            content
-        }
-    }
-}
-
- 
 private struct HakoProfileSelectionFailure: Equatable {
     let profileID: Profile.ID
      
     let message: HakoDisplayText
+}
+
+ 
+ 
+ 
+ 
+ 
+private struct HakoProfileBadge: View {
+    let text: HakoDisplayText
+
+    var body: some View {
+        Text(hako: text)
+            .font(.caption2)
+            .lineLimit(1)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .overlay(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(.secondary.opacity(0.55), lineWidth: 1)
+            )
+    }
 }
 
 private struct HakoProfileRow<
@@ -1172,15 +1266,31 @@ private struct HakoProfileRow<
     let select: () -> Void
     let palette: HakoProductPalette
     let icon: (HakoSymbol) -> Icon
+    var presentsDetailModally = false
+    @State private var showsDetail = false
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    @ViewBuilder
     var body: some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            accessibilityProfileRow
-        } else {
-            standardProfileRow
+        let _ = HakoPerf.count("profiles.list.row")
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                accessibilityProfileRow
+            } else {
+                standardProfileRow
+            }
+        }
+        .hakoProductModal(isPresented: $showsDetail, role: .page) {
+            HakoSingleColumnNavigationContainer {
+                destination()
+                    .hakoToolbarUnlessInPanel {
+                        ToolbarItem(placement: .cancellationAction) {
+                            HakoSheetCloseButton { showsDetail = false }
+                        }
+                    }
+                    .hakoProductModalRoot(title: profile.label)
+            }
+            .environment(\.hakoProductModalDismiss, { showsDetail = false })
         }
     }
 
@@ -1191,7 +1301,9 @@ private struct HakoProfileRow<
     private func rowLink<Label: View>(
         @ViewBuilder label: () -> Label
     ) -> some View {
-        if #available(iOS 16.0, macOS 13.0, tvOS 16.0, *) {
+        if presentsDetailModally {
+            Button { showsDetail = true } label: { label() }
+        } else if #available(iOS 16.0, macOS 13.0, tvOS 16.0, *) {
              
              
              
@@ -1224,9 +1336,13 @@ private struct HakoProfileRow<
      
      
     private var standardProfileRow: some View {
+         
+         
+         
+         
         HStack(
             alignment: .center,
-            spacing: HakoTheme.Spacing.compact
+            spacing: 0
         ) {
             Button(action: select) {
                 HStack(
@@ -1238,8 +1354,11 @@ private struct HakoProfileRow<
                         alignment: .leading,
                         spacing: HakoTheme.Spacing.compact
                     ) {
+                         
+                         
+                         
                         HStack(
-                            alignment: .firstTextBaseline,
+                            alignment: .center,
                             spacing: HakoTheme.Spacing.compact
                         ) {
                             Text(profile.label)
@@ -1252,33 +1371,52 @@ private struct HakoProfileRow<
                                 )
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
-                            if let subscription = profile.subscription,
-                               let used = HakoSubscriptionUsageView
-                                   .usedText(subscription) {
-                                Spacer(minLength: HakoTheme.Spacing.compact)
-                                used
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .monospacedDigit()
-                                    .lineLimit(1)
+                             
+                             
+                             
+                             
+                             
+                             
+                             
+                             
+                             
+                             
+                            Spacer(minLength: HakoTheme.Spacing.compact)
+                            ForEach(Array(profile.badges.enumerated()), id: \.offset) { _, badge in
+                                HakoProfileBadge(text: badge)
+                                    .fixedSize()
                             }
                         }
-
+                         
+                         
+                         
                         if let subscription = profile.subscription {
                             HakoSubscriptionUsageView(
                                 subscription: subscription,
-                                style: .row
+                                style: .row,
+                                note: profile.note
                             )
+                        } else if let note = profile.note {
+                            Text(hako: note)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
 
-                        Text(hako: profile.sourceSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                         
+                         
+                         
+                         
+                        if profile.source == .remote, profile.badges.isEmpty {
+                            Text(hako: profile.sourceSummary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                     }
-                    Spacer(minLength: HakoTheme.Spacing.compact)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, HakoTheme.Spacing.standard)
                 .padding(
             .vertical,
@@ -1338,12 +1476,13 @@ private struct HakoProfileRow<
 
     private var detailButton: some View {
         rowLink {
-            icon(.infoCircle)
-                .font(.title3)
-                .foregroundStyle(.tint)
+            icon(presentsDetailModally ? .infoCircle : .chevronForward)
+                .font(presentsDetailModally ? .title3 : .caption.weight(.semibold))
+                .foregroundStyle(presentsDetailModally ? AnyShapeStyle(Color.blue) : AnyShapeStyle(.tertiary))
                 .frame(
                     width: HakoTheme.Control.minimumHitTarget,
-                    height: HakoTheme.Control.minimumHitTarget
+                    height: HakoTheme.Control.minimumHitTarget,
+                    alignment: presentsDetailModally ? .center : .trailing
                 )
                 .contentShape(Rectangle())
         }
@@ -1394,15 +1533,17 @@ private struct HakoProfileRow<
                         )
                     }
 
-                    Text(hako: profile.sourceSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                        .fixedSize(
-                            horizontal: false,
-                            vertical: true
-                        )
+                    if profile.source == .remote {
+                        Text(hako: profile.sourceSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .fixedSize(
+                                horizontal: false,
+                                vertical: true
+                            )
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, HakoTheme.Spacing.standard)
@@ -1430,13 +1571,14 @@ private struct HakoProfileRow<
 
             rowLink {
                 HStack(spacing: HakoTheme.Spacing.row) {
-                    icon(.infoCircle)
-                        .foregroundStyle(.tint)
-                        .accessibilityHidden(true)
                     Text("Details")
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(.tint)
+                        .foregroundStyle(.primary)
                     Spacer()
+                    icon(presentsDetailModally ? .infoCircle : .chevronForward)
+                        .font(presentsDetailModally ? .title3 : .caption.weight(.semibold))
+                        .foregroundStyle(presentsDetailModally ? AnyShapeStyle(Color.blue) : AnyShapeStyle(.tertiary))
+                        .accessibilityHidden(true)
                 }
                 .padding(.horizontal, HakoTheme.Spacing.standard)
                 .padding(
@@ -1480,7 +1622,13 @@ private struct HakoProfileDetailView<
         activeCapability = capability
     }
 
-    @Environment(\.dismiss) private var dismiss
+     
+     
+     
+     
+    @State private var dismiss = HakoDismissHandle()
+    @State private var isSavingSourceUpdates = false
+    @State private var isSavingOriginalConfiguration = false
     @State private var isDuplicating = false
      
      
@@ -1489,7 +1637,7 @@ private struct HakoProfileDetailView<
     @State private var showsActionFailure: ActionFailure?
 
     struct ActionFailure: Equatable {
-        enum Action { case duplicate, delete }
+        enum Action { case duplicate, delete, sourceUpdates, originalConfiguration }
         let action: Action
         let message: HakoDisplayText
     }
@@ -1509,12 +1657,14 @@ private struct HakoProfileDetailView<
      
      
      
-    @Environment(\.hakoProductModalDismiss) private var productModalDismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.locale) private var locale
     @State private var activeCapability:
         HakoProfilesCapabilityDestination?
     @State private var showsDeleteConfirmation = false
     @State private var showsPlaintextExportConfirmation = false
+     
+    @State private var isPastFirstFrame = false
     @State private var draftName = ""
     @FocusState private var editingName: Bool
 
@@ -1536,6 +1686,7 @@ private struct HakoProfileDetailView<
                 }
             }
         }
+        .hakoCapturesDismiss(dismiss)
         .hakoProductModal(
             item: $activeCapability,
             role: .page,
@@ -1559,35 +1710,45 @@ private struct HakoProfileDetailView<
     private func detailPage(
         _ profile: HakoProfileSnapshot
     ) -> some View {
-        HakoProductRootPage(
+        HakoPerf.count("profile.detail.body")
+        return HakoProductRootPage(
             palette: palette,
             accessibilityIdentifier: "profile-detail.root"
         ) {
             identitySection(profile)
-            if profile.source == .remote,
-               profile.subscription != nil
-                || profile.canSync
-                || profile.canConfigureSubscription
-                || profile.canCopySubscriptionLink
-            {
-                subscriptionSection(profile)
-            }
-            if !profile.heldBackUpdates.isEmpty {
-                heldBackSection(profile)
-            }
-            if profile.canEditSource
-                || profile.canDuplicate
-                || profile.canExport
-            {
+             
+             
+             
+            if isPastFirstFrame {
+                if profile.isComposed == true || profile.canUseOriginalConfiguration
+                    || (profile.isComposed == false && profile.canEditSource) { compositionSection(profile) }
+                if profile.source == .remote,
+                   profile.subscription != nil
+                    || profile.canSync
+                    || profile.canConfigureSubscription
+                    || profile.canCopySubscriptionLink
+                {
+                    subscriptionSection(profile)
+                }
+                if !profile.heldBackUpdates.isEmpty {
+                    heldBackSection(profile)
+                }
+                 
+                 
                 manageSection(profile)
+                networkSection(profile)
+                if profile.canOpenRuntimePreview
+                    || profile.canRestoreLastKnownGood
+                {
+                    runtimeSection(profile)
+                }
+                deleteSection(profile)
             }
-            if profile.canOpenRuntimePreview
-                || profile.canRestoreLastKnownGood
-            {
-                runtimeSection(profile)
-            }
-            deleteSection(profile)
             statusSection
+        }
+        .onAppear {
+            isPastFirstFrame = false
+            DispatchQueue.main.async { isPastFirstFrame = true }
         }
          
          
@@ -1629,26 +1790,12 @@ private struct HakoProfileDetailView<
                 }
             }
         }
+        .hakoDeleteConfirmation(profile.label, isPresented: $showsDeleteConfirmation,
+            actionTitle: .copy("Delete Profile"),
+            message: .copy("This profile will be deleted. Sources and rule schemes in the library will remain."),
+            identifier: "profile-detail.delete.confirm") { delete(profile) }
         .alert(
-            "Delete Profile?",
-            isPresented: $showsDeleteConfirmation
-        ) {
-            Button("Delete", role: .destructive) {
-                delete(profile)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-             
-             
-             
-             
-            Text(hako: .format(
-                "Delete %@? This cannot be undone.",
-                [profile.label]
-            ))
-        }
-        .alert(
-            "Export Configuration Text Only?",
+            "Export Profile Text Only?",
             isPresented: $showsPlaintextExportConfirmation
         ) {
             Button("Export Text") {
@@ -1706,18 +1853,20 @@ private struct HakoProfileDetailView<
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Text(hako: profile.sourceSummary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(
-                    dynamicTypeSize.isAccessibilitySize ? 2 : 1
-                )
-                .truncationMode(.middle)
-                .fixedSize(
-                    horizontal: false,
-                    vertical: dynamicTypeSize.isAccessibilitySize
-                )
-                .padding(.leading, HakoTheme.Spacing.standard)
+            if profile.source == .remote {
+                Text(hako: profile.sourceSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(
+                        dynamicTypeSize.isAccessibilitySize ? 2 : 1
+                    )
+                    .truncationMode(.middle)
+                    .fixedSize(
+                        horizontal: false,
+                        vertical: dynamicTypeSize.isAccessibilitySize
+                    )
+                    .padding(.leading, HakoTheme.Spacing.standard)
+            }
         }
         .onChange(of: editingName) { focused in
             if profile.canRename, !focused {
@@ -1762,7 +1911,7 @@ private struct HakoProfileDetailView<
 
     private var activeProfileLabel: some View {
         Label {
-            Text("Active")
+            Text("In Use")
         } icon: {
             icon(.checkmarkCircleFill)
         }
@@ -1790,7 +1939,20 @@ private struct HakoProfileDetailView<
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    @ViewBuilder
     private var nameEditor: some View {
+         
+         
+         
+        if !isPastFirstFrame {
+            Text(verbatim: draftName)
+                .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+        } else {
+            nameField
+        }
+    }
+
+    private var nameField: some View {
          
          
          
@@ -1865,9 +2027,9 @@ private struct HakoProfileDetailView<
     private func heldBackLine(_ item: HakoProfileHeldBackUpdate) -> HakoDisplayText {
         switch item.change {
         case .removed:
-            return .format("Removed by the subscription · yours: %@", [item.appValue])
+            return .format("Removed by the profile URL · yours: %@", [item.appValue])
         case .added, .changed:
-            return .format("Subscription now: %@ · yours: %@", [item.newValue ?? "", item.appValue])
+            return .format("Profile URL now: %@ · yours: %@", [item.newValue ?? "", item.appValue])
         }
     }
 
@@ -1875,7 +2037,7 @@ private struct HakoProfileDetailView<
         _ profile: HakoProfileSnapshot
     ) -> some View {
         HakoProfileGroup(
-            title: "Subscription",
+            title: "Profile URL",
             palette: palette,
             presentationClass: presentationClass
         ) {
@@ -1913,10 +2075,10 @@ private struct HakoProfileDetailView<
                 } label: {
                     HakoProfileActionRow(
                         title: "Sync Now",
-                        subtitle: "Fetch the latest nodes and rules",
                         symbol: .arrowTriangle2Circlepath,
                         tint: .primary,
                         showsDisclosure: false,
+                        isBusy: profile.isBusy,
                         icon: icon
                     )
                 }
@@ -1942,8 +2104,7 @@ private struct HakoProfileDetailView<
                         .subscriptionSettings(profile.id)
                 } label: {
                     HakoProfileActionRow(
-                        title: "Subscription Settings",
-                        subtitle: "Source · automatic updates · interval",
+                        title: "Profile URL Settings",
                         symbol: .link,
                         tint: .primary,
                         icon: icon
@@ -1966,8 +2127,7 @@ private struct HakoProfileDetailView<
                     send(.copySubscriptionLink(id: profile.id))
                 } label: {
                     HakoProfileActionRow(
-                        title: "Copy Subscription Link",
-                        subtitle: "Copied only when you ask",
+                        title: "Copy Profile URL",
                         symbol: .docOnDoc,
                         tint: .primary,
                         showsDisclosure: false,
@@ -1982,6 +2142,138 @@ private struct HakoProfileDetailView<
         }
     }
 
+    private func compositionSection(_ profile: HakoProfileSnapshot) -> some View {
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        let usesOriginal = profile.isComposed == false && profile.canUseOriginalConfiguration
+        return HakoProfileGroup(title: "Configuration", palette: palette, presentationClass: presentationClass) {
+            if profile.canUseOriginalConfiguration {
+                VStack(alignment: .leading, spacing: HakoTheme.Spacing.tight) {
+                    Toggle(isOn: Binding(get: { usesOriginal }, set: { value in
+                        guard !isSavingOriginalConfiguration else { return }
+                        isSavingOriginalConfiguration = true
+                        showsActionFailure = nil
+                        Task { @MainActor in
+                            defer { isSavingOriginalConfiguration = false }
+                            do {
+                                _ = try await actions.perform(.profiles(.setUsesOriginalConfiguration(id: profile.id, enabled: value)), allowedBy: snapshot)
+                            } catch {
+                                showsActionFailure = ActionFailure(action: .originalConfiguration, message: .copy(error.localizedDescription))
+                            }
+                        }
+                    })) {
+                         
+                         
+                         
+                         
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Use Original Configuration")
+                            if profile.isTakenOverByScript {
+                                 
+                                 
+                                 
+                                Text(hako: HakoProfileSnapshot.takenOverByScript).font(.footnote).foregroundStyle(.tertiary)
+                            } else if let name = profile.configurationSourceNames?.first, !name.isEmpty {
+                                Text(verbatim: name).font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .disabled(isSavingOriginalConfiguration || profile.isBusy)
+                    .accessibilityIdentifier("profile-detail.uses-original-configuration")
+                    actionFailureLine(for: .originalConfiguration)
+                }
+                .padding(.vertical, HakoMacSettingsMetrics.rowVerticalInset(touch: HakoTheme.Spacing.row))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if !usesOriginal { HakoRowDivider() }
+            }
+            if !usesOriginal {
+            if profile.isComposed == true {
+            Button { present(.configurationSources(profile.id)) } label: {
+                HakoProfileActionRow(title: "Node Sources",
+                    subtitle: HakoProfileSourcesSummary.value(profile.configurationSourceNames),
+                    symbol: .serverRack, tint: .primary, icon: icon)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("profile-detail.configuration-sources")
+            HakoRowDivider()
+            }
+             
+             
+             
+             
+            let takenOver = profile.isTakenOverByScript
+            Button { present(.configurationRules(profile.id)) } label: {
+                HakoProfileActionRow(title: "Rule Scheme",
+                    subtitle: takenOver ? HakoProfileSnapshot.takenOverByScript
+                        : profile.configurationRuleName.map { .verbatim($0) } ?? .copy("Choose a rule scheme"),
+                    symbol: .ruleDomain, tint: takenOver ? .secondary : .primary,
+                    titleColor: takenOver ? .secondary : .primary, showsDisclosure: !takenOver, icon: icon)
+            }
+            .buttonStyle(.plain)
+            .disabled(takenOver)
+            .accessibilityIdentifier("profile-detail.configuration-rules")
+            }
+            if let follows = profile.followsConfigurationSourceUpdates {
+                HakoRowDivider()
+                VStack(alignment: .leading, spacing: HakoTheme.Spacing.tight) {
+                Toggle("Automatically Update Sources", isOn: Binding(get: { follows }, set: { value in
+                    guard !isSavingSourceUpdates else { return }
+                    isSavingSourceUpdates = true
+                    showsActionFailure = nil
+                    Task { @MainActor in
+                        defer { isSavingSourceUpdates = false }
+                        do {
+                            _ = try await actions.perform(.profiles(.setConfigurationSourceUpdates(id: profile.id, enabled: value)), allowedBy: snapshot)
+                        } catch {
+                            showsActionFailure = ActionFailure(action: .sourceUpdates, message: .copy(error.localizedDescription))
+                        }
+                    }
+                }))
+                .disabled(isSavingSourceUpdates || profile.isBusy)
+                .accessibilityIdentifier("profile-detail.configuration-source-updates")
+                actionFailureLine(for: .sourceUpdates)
+                }
+                .padding(.vertical, HakoMacSettingsMetrics.rowVerticalInset(touch: HakoTheme.Spacing.row))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+     
+     
+     
+     
+    private func networkSection(
+        _ profile: HakoProfileSnapshot
+    ) -> some View {
+        HakoProfileGroup(
+            title: "Network",
+            palette: palette,
+            presentationClass: presentationClass
+        ) {
+            Button { activeCapability = .network(profile.id) } label: {
+                HakoProfileActionRow(title: "Sniffer & NTP",
+                    symbol: .network, tint: .primary, icon: icon)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("profile.detail.network")
+            HakoRowDivider()
+            Button { activeCapability = .trust(profile.id) } label: {
+                HakoProfileActionRow(title: "Compatibility & Trust",
+                    symbol: .lockShield, tint: .primary, icon: icon)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("profile.detail.trust")
+        }
+    }
+
     private func manageSection(
         _ profile: HakoProfileSnapshot
     ) -> some View {
@@ -1990,56 +2282,36 @@ private struct HakoProfileDetailView<
             palette: palette,
             presentationClass: presentationClass
         ) {
-            Button {
-                activeCapability = .rules(profile.id)
-            } label: {
-                HakoProfileActionRow(
-                    title: "Rules",
-                    subtitle: "Personal rules for this profile",
-                    symbol: .listTriangle,
-                    tint: .primary,
-                    icon: icon
-                )
+            if profile.canEditSource {
+                Button { present(.sourceEditor(profile.id)) } label: {
+                    HakoProfileActionRow(title: "Edit Source",
+                        symbol: .curlybraces, tint: .primary, icon: icon)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("profile-detail.edit-source")
+                HakoRowDivider()
+            }
+             
+             
+             
+             
+             
+            Button { activeCapability = .rules(profile.id) } label: {
+                HakoProfileActionRow(title: "Custom Rules",
+                    value: HakoProfileSnapshot.customRulesValue(count: profile.customRulesCount, locale: locale),
+                    symbol: .ruleDomain, tint: .primary, icon: icon)
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier("profile.detail.rules")
-
-            Button {
-                activeCapability = .override(profile.id)
-            } label: {
-                HakoProfileActionRow(
-                    title: "Override",
-                    subtitle: "Change what this profile sends to the core",
-                    symbol: .sliderHorizontal3,
-                    tint: .primary,
-                    icon: icon
-                )
+            .accessibilityIdentifier("profile-detail.custom-rules")
+            HakoRowDivider()
+            Button { activeCapability = .override(profile.id) } label: {
+                HakoProfileActionRow(title: "Overrides and Scripts",
+                    value: profile.overrideScriptName.map { .verbatim($0) },
+                    symbol: .sliderHorizontal3, tint: .primary, icon: icon)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("profile.detail.override")
-
-            if profile.canEditSource {
-                Button {
-                    present(.sourceEditor(profile.id))
-                } label: {
-                    HakoProfileActionRow(
-                        title: "Edit Source",
-                        subtitle:
-                            "Edit this profile's raw configuration text",
-                        symbol: .curlybraces,
-                        tint: .primary,
-                        icon: icon
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier(
-                    "profile-detail.edit-source"
-                )
-
-                if profile.canDuplicate || profile.canExport {
-                    HakoRowDivider()
-                }
-            }
+            if profile.canDuplicate || profile.canExport { HakoRowDivider() }
 
             if profile.canDuplicate {
                  
@@ -2050,7 +2322,7 @@ private struct HakoProfileDetailView<
                 } label: {
                     HakoProfileActionRow(
                         title: "Duplicate Profile",
-                        subtitle: isDuplicating ? "Creating the copy…" : "Create an independent local copy",
+                        subtitle: isDuplicating ? "Creating the copy…" : nil,
                         symbol: .docOnDoc,
                         tint: .primary,
                         showsDisclosure: false,
@@ -2088,7 +2360,6 @@ private struct HakoProfileDetailView<
                 } label: {
                     HakoProfileActionRow(
                         title: "Export",
-                        subtitle: "The complete configuration text",
                         symbol: .squareAndArrowUp,
                         tint: .primary,
                         showsDisclosure: false,
@@ -2326,11 +2597,7 @@ private struct HakoProfileDetailView<
      
      
     private func leave() {
-        if let productModalDismiss {
-            productModalDismiss()
-        } else {
-            dismiss()
-        }
+        dismiss.closeModalOrDismiss()
     }
 
     private func send(_ command: HakoProfilesCommand) {
@@ -2387,7 +2654,7 @@ private struct HakoProfileReorderView: View {
                             .lineLimit(1)
                         Spacer(minLength: HakoTheme.Spacing.compact)
                         if profile.isCurrent {
-                            Text("Active")
+                            Text("In Use")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -2673,9 +2940,10 @@ private struct HakoProfileBatchReportView<Icon: View>: View {
     }
 }
 
-private struct HakoProfileGroup<
+struct HakoProfileGroup<
     Content: View
 >: View {
+    let nativeList: Bool
     let title: HakoDisplayText
     let palette: HakoProductPalette
     let presentationClass: HakoPresentationClass
@@ -2685,17 +2953,20 @@ private struct HakoProfileGroup<
         title: HakoDisplayText,
         palette: HakoProductPalette,
         presentationClass: HakoPresentationClass,
+        nativeList: Bool = false,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
         self.palette = palette
         self.presentationClass = presentationClass
+        self.nativeList = nativeList
         self.content = content()
     }
 
     @ViewBuilder
     var body: some View {
-        if HakoPlatformLayout.pageUsesSystemSettingsIdiom {
+        let _ = HakoPerf.count("profile.group")
+        if nativeList || HakoPlatformLayout.pageUsesSystemSettingsIdiom {
              
              
              
@@ -2706,7 +2977,8 @@ private struct HakoProfileGroup<
             Section {
                 content
             } header: {
-                Text(hako: title)
+                if nativeList { HakoConfigurationLibraryHeader(title: title) }
+                else { Text(hako: title) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -2724,11 +2996,8 @@ private struct HakoProfileGroup<
              
              
              
-            Text(hako: title)
-                .textCase(.uppercase)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.leading, HakoTheme.Spacing.standard)
+            HakoConfigurationLibraryHeader(title: title)
+                .padding(.horizontal, HakoTheme.Spacing.standard)
             HakoCardSurface(
                 fill: palette.card,
                 separator: palette.separator
@@ -2751,18 +3020,26 @@ private struct HakoProfileGroup<
     }
 }
 
-private struct HakoProfileActionRow<Icon: View>: View {
+struct HakoProfileActionRow<Icon: View>: View {
     let title: HakoDisplayText
-    let subtitle: HakoDisplayText
+    var subtitle: HakoDisplayText? = nil
+     
+     
+    var value: HakoDisplayText? = nil
     let symbol: HakoSymbol
     let tint: Color
     var titleColor: Color = .primary
     var showsDisclosure: Bool = true
+     
+     
+     
+    var isBusy: Bool = false
     let icon: (HakoSymbol) -> Icon
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
+        let _ = HakoPerf.count("profile.action.row")
         Group {
             if dynamicTypeSize.isAccessibilitySize {
                 accessibilityActionRow
@@ -2771,7 +3048,17 @@ private struct HakoProfileActionRow<Icon: View>: View {
                     leadingIcon
                     actionCopy
                     Spacer(minLength: HakoTheme.Spacing.compact)
-                    if showsDisclosure {
+                    if let value {
+                        Text(hako: value)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    if isBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if showsDisclosure {
                         disclosureIcon
                     }
                 }
@@ -2796,7 +3083,10 @@ private struct HakoProfileActionRow<Icon: View>: View {
             HStack {
                 leadingIcon
                 Spacer(minLength: HakoTheme.Spacing.standard)
-                if showsDisclosure {
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if showsDisclosure {
                     disclosureIcon
                 }
             }
@@ -2829,10 +3119,12 @@ private struct HakoProfileActionRow<Icon: View>: View {
                 .font(.body)
                 .foregroundStyle(titleColor)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(hako: subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let subtitle {
+                Text(hako: subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -2862,6 +3154,9 @@ private struct HakoSubscriptionUsageView: View {
 
     let subscription: HakoProfileSubscriptionSnapshot
     var style: Style = .detail
+     
+     
+    var note: HakoDisplayText? = nil
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -2930,20 +3225,41 @@ private struct HakoSubscriptionUsageView: View {
                         .monospacedDigit()
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
-                } else if let expiration = subscription.expiration {
-                    Text(hako: .format(
-                        "until %@", [dateString(expiration)]
-                    ))
+                } else if let line = rowMetaLine {
+                     
+                     
+                     
+                     
+                     
+                     
+                    line
                         .font(.caption)
-                        .foregroundColor(expiryTint(expiration))
                         .monospacedDigit()
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
             }
         }
         .accessibilityElement(children: .combine)
     }
 
+
+     
+     
+     
+    private var rowMetaLine: Text? {
+        var pieces: [Text] = []
+        if let used = Self.usedText(subscription) { pieces.append(used.foregroundColor(.secondary)) }
+        if let note { pieces.append(Text(hako: note).foregroundColor(.secondary)) }
+        if let expiration = subscription.expiration {
+            pieces.append(
+                Text(hako: .format("until %@", [dateString(expiration)]))
+                    .foregroundColor(expiryTint(expiration))
+            )
+        }
+        guard let first = pieces.first else { return nil }
+        return pieces.dropFirst().reduce(first) { $0 + Text(" · ").foregroundColor(.secondary) + $1 }
+    }
 
      
      
@@ -3047,5 +3363,22 @@ private struct HakoSubscriptionUsageView: View {
             return .orange
         }
         return .secondary
+    }
+}
+
+ 
+enum HakoProfileSourcesSummary {
+     
+     
+     
+     
+     
+     
+    static func value(_ names: [String]?) -> HakoDisplayText {
+        let present = (names ?? []).filter { !$0.isEmpty }
+        guard !present.isEmpty else { return .copy("Choose node sources") }
+        guard present.count > 2 else { return .verbatim(present.joined(separator: " · ")) }
+         
+        return .format("%@ sources", [String(present.count)])
     }
 }

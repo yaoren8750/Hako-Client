@@ -28,9 +28,11 @@ public enum HakoMoreDestination:
 {
     case root
     case geoResources
+    case storage
     case backupRestore
     case onDemand
     case tunnel
+    case ipStack
     case systemIntegrations
     case dnsOnly
     case dnsAndHosts
@@ -47,8 +49,10 @@ public enum HakoMoreDestination:
         switch self {
         case .root: "More"
         case .geoResources: "Geo Resources"
+        case .storage: "Storage"
         case .backupRestore: "Backup & Restore"
         case .onDemand: "On Demand"
+        case .ipStack: "IP Stack"
         case .tunnel: "Tunnel"
         case .systemIntegrations: "Shortcuts & Controls"
         case .dnsOnly: "DNS-only"
@@ -66,8 +70,10 @@ public enum HakoMoreDestination:
         switch self {
         case .root: .ellipsisCircle
         case .geoResources: .globeAsiaAustralia
+        case .storage: .externaldrive
         case .backupRestore: .arrowClockwiseIcloud
         case .onDemand: .appBadgeCheckmarkFill
+        case .ipStack: .globeBadgeChevronBackward
         case .tunnel: .arrowLeftAndRightSquareFill
         case .systemIntegrations: .arrowTriangleSwap
         case .dnsOnly: .lockShield
@@ -85,8 +91,10 @@ public enum HakoMoreDestination:
         switch self {
         case .root: .blue
         case .geoResources: .green
+        case .storage: .indigo
         case .backupRestore: .teal
         case .onDemand: .cyan
+        case .ipStack: .blue
         case .tunnel: .blue
         case .systemIntegrations: .indigo
         case .dnsOnly: .teal
@@ -120,7 +128,7 @@ public enum HakoMoreCatalog {
      
      
     private static var connectionBehaviorDestinations: [HakoMoreDestination] {
-        [.onDemand, .tunnel, .dnsOnly]
+        [.onDemand, .tunnel, .ipStack, .dnsOnly]
     }
 
      
@@ -137,12 +145,30 @@ public enum HakoMoreCatalog {
         .about,
     ]
 
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
     public static let sections = [
-         
-         
+        HakoMoreSectionDescriptor(
+            id: .connectionBehavior,
+            destinations: connectionBehaviorDestinations
+        ),
         HakoMoreSectionDescriptor(
             id: .coreSettings,
             destinations: [.dnsAndHosts, .tunnelAndRoutes, .coreBehavior]
+        ),
+        HakoMoreSectionDescriptor(
+            id: .clientPreferences,
+            destinations: [.clientSettings, .appearance]
         ),
          
          
@@ -152,20 +178,15 @@ public enum HakoMoreCatalog {
          
         HakoMoreSectionDescriptor(
             id: .dataAndResources,
-            destinations: [.geoResources]
-        ),
-        HakoMoreSectionDescriptor(
-            id: .connectionBehavior,
-            destinations: connectionBehaviorDestinations
+             
+             
+            destinations: [.geoResources, .storage]
         ),
         HakoMoreSectionDescriptor(
             id: .integrations,
             destinations: [.systemIntegrations]
         ),
-        HakoMoreSectionDescriptor(
-            id: .clientPreferences,
-            destinations: [.clientSettings, .appearance]
-        ),
+         
         HakoMoreSectionDescriptor(
             id: .about,
             destinations: [.about]

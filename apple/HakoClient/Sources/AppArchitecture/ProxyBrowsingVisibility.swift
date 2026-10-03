@@ -1,4 +1,5 @@
 import Foundation
+import HakoClientKit
 
  
  
@@ -63,6 +64,22 @@ enum ProxyBrowsingVisibility {
      
      
      
+     
+     
+     
+     
+     
+     
+    static func members<Member>(
+        _ members: [Member],
+        of group: String,
+        mode: Mode,
+        name: (Member) -> String
+    ) -> [Member] {
+        guard mode == .global, group == kernelGlobalGroupName else { return members }
+        return members.filter { !LatencyProbeNamePolicy.builtinNames.contains(name($0)) }
+    }
+
     static func standaloneNodes<Node>(
         _ nodes: [Node],
         mode: Mode
@@ -87,6 +104,17 @@ enum ProxyBrowsingVisibility {
         case .direct:
             return []
         case .global:
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
             return groups.filter { !isHidden($0) }
         case .rule:
             return groups.filter { group in

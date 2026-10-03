@@ -14,7 +14,7 @@ settings:
     SWIFT_VERSION: '5.9'
     GENERATE_INFOPLIST_FILE: true
     CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: 1.0.5
+    MARKETING_VERSION: 1.0.9
     HAKO_SOURCE_REVISION: source-build
     OTHER_LDFLAGS:
     - -lresolv
@@ -43,13 +43,13 @@ targets:
       buildPhase: resources
     - path: Resources/Legal
       buildPhase: resources
-    - path: Resources/BundledGeoData/GeoIP.dat
+    - path: Resources/BundledGeoData/GeoSite.dat.xz
       buildPhase: resources
-    - path: Resources/BundledGeoData/GeoSite.dat
+    - path: Resources/BundledGeoData/geoip.metadb.xz
       buildPhase: resources
-    - path: Resources/BundledGeoData/geoip.metadb
+    - path: Resources/BundledGeoData/GeoIP.dat.xz
       buildPhase: resources
-    - path: Resources/BundledGeoData/ASN.mmdb
+    - path: Resources/BundledGeoData/ASN.mmdb.xz
       buildPhase: resources
     - path: Resources/BundledGeoData/BundledGeoDataManifest.json
       buildPhase: resources
@@ -57,11 +57,17 @@ targets:
       buildPhase: resources
     - path: ../../Vendor/HakoAdapter/Sources/HakoAdapter
     settings:
+      configs:
+        Debug:
+          INFOPLIST_KEY_UIFileSharingEnabled: 'YES'
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: -Osize
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE)
         DEVELOPMENT_TEAM: $(HAKO_DEVELOPMENT_TEAM)
         CODE_SIGN_STYLE: Automatic
         ENABLE_USER_SCRIPT_SANDBOXING: false
+        REMOVE_HEADERS_FROM_EMBEDDED_FRAMEWORKS: true
     info:
       path: Info.plist
       properties:
@@ -101,7 +107,7 @@ targets:
         - fetch
         - processing
         NSUbiquitousContainers:
-          iCloud.com.hako.network:
+          iCloud.org.example.hako:
             NSUbiquitousContainerIsDocumentScopePublic: true
             NSUbiquitousContainerName: Clash
             NSUbiquitousContainerSupportedFolderLevels: Any
@@ -123,14 +129,51 @@ targets:
     dependencies:
     - package: HakoClientKit
     - package: HakoClientUI
-    - framework: ../../Hako.xcframework
-      embed: false
+    - target: Hako
+      embed: true
     - target: HakoClientExtension
       embed: true
     - target: HakoControlsExtension
       embed: true
     - target: HakoShareExtension
       embed: true
+  Hako:
+    type: framework
+    platform: iOS
+    sources:
+    - path: HakoCore
+    settings:
+      configs:
+        Release:
+          DEPLOYMENT_POSTPROCESSING: true
+          STRIP_INSTALLED_PRODUCT: true
+          STRIP_STYLE: non-global
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE).core
+        DEVELOPMENT_TEAM: $(HAKO_DEVELOPMENT_TEAM)
+        CODE_SIGN_STYLE: Automatic
+        DEFINES_MODULE: true
+        MODULEMAP_FILE: HakoCore/module.modulemap
+        SKIP_INSTALL: true
+        ENABLE_USER_SCRIPT_SANDBOXING: false
+        HAKO_CORE_SLICE[sdk=iphoneos*]: ios-arm64
+        HAKO_CORE_SLICE[sdk=iphonesimulator*]: ios-arm64_x86_64-simulator
+        HAKO_CORE_ARCHIVE: $(SRCROOT)/../../Hako.xcframework/$(HAKO_CORE_SLICE)/Hako.framework/Hako
+        OTHER_LDFLAGS:
+        - -Wl,-force_load,$(HAKO_CORE_ARCHIVE)
+        - -lresolv
+    preBuildScripts:
+    - name: Copy the Go core's public headers out of the locked xcframework
+      shell: /bin/sh
+      script: "set -eu\nsrc=\"$SRCROOT/../../Hako.xcframework/$HAKO_CORE_SLICE/Hako.framework/Headers\"\
+        \ndst=\"$TARGET_BUILD_DIR/$PUBLIC_HEADERS_FOLDER_PATH\"\nmkdir -p \"$dst\"\
+        \nfor h in ref.h Hako.objc.h Universe.objc.h Hako.h; do\n  cp -f \"$src/$h\"\
+        \ \"$dst/$h\"\ndone\n"
+      outputFiles:
+      - $(TARGET_BUILD_DIR)/$(PUBLIC_HEADERS_FOLDER_PATH)/ref.h
+      - $(TARGET_BUILD_DIR)/$(PUBLIC_HEADERS_FOLDER_PATH)/Hako.objc.h
+      - $(TARGET_BUILD_DIR)/$(PUBLIC_HEADERS_FOLDER_PATH)/Universe.objc.h
+      - $(TARGET_BUILD_DIR)/$(PUBLIC_HEADERS_FOLDER_PATH)/Hako.h
   HakoClientExtension:
     type: app-extension
     platform: iOS
@@ -149,10 +192,17 @@ targets:
       buildPhase: resources
     - path: ../../Vendor/HakoAdapter/Sources/HakoAdapter
     settings:
+      configs:
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: -Osize
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE).extension
         DEVELOPMENT_TEAM: $(HAKO_DEVELOPMENT_TEAM)
         CODE_SIGN_STYLE: Automatic
+        LD_RUNPATH_SEARCH_PATHS:
+        - $(inherited)
+        - '@executable_path/Frameworks'
+        - '@executable_path/../../Frameworks'
     entitlements:
       path: Extension/Extension.entitlements
       properties:
@@ -170,7 +220,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
     dependencies:
-    - framework: ../../Hako.xcframework
+    - target: Hako
       embed: false
     - sdk: NetworkExtension.framework
   HakoControlsExtension:
@@ -187,6 +237,8 @@ targets:
       group: Sources/SystemIntegration
     - path: Shared/HakoAppIdentifiers.swift
     - path: Shared/HakoDeviceModel.swift
+      group: Sources/SystemIntegration
+    - path: Shared/HakoWidgetPlatform.swift
       group: Sources/SystemIntegration
     - path: ../HakoClientUI/Sources/HakoClientUI/Features/Widgets/HakoWidgetSnapshot.swift
       group: Shared
@@ -208,6 +260,9 @@ targets:
     - path: Resources/PrivacyInfo.xcprivacy
       buildPhase: resources
     settings:
+      configs:
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: -Osize
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE).controls
         IPHONEOS_DEPLOYMENT_TARGET: '17.0'
@@ -244,6 +299,9 @@ targets:
     - path: Resources/PrivacyInfo.xcprivacy
       buildPhase: resources
     settings:
+      configs:
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: -Osize
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE).share
         DEVELOPMENT_TEAM: $(HAKO_DEVELOPMENT_TEAM)
@@ -267,6 +325,43 @@ targets:
             NSExtensionActivationRule: SUBQUERY(extensionItems, $extensionItem, $extensionItem.attachments.@count
               == 1 AND SUBQUERY($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers
               UTI-CONFORMS-TO "public.yaml").@count == 1).@count == 1
+  HakoMacCore:
+    type: framework
+    platform: macOS
+    sources:
+    - path: HakoCore
+    settings:
+      configs:
+        Release:
+          DEPLOYMENT_POSTPROCESSING: true
+          STRIP_INSTALLED_PRODUCT: true
+          STRIP_STYLE: non-global
+      base:
+        PRODUCT_NAME: Hako
+        PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE).core
+        DEVELOPMENT_TEAM: $(HAKO_DEVELOPMENT_TEAM)
+        CODE_SIGN_STYLE: Automatic
+        DEFINES_MODULE: true
+        MODULEMAP_FILE: HakoCore/module.modulemap
+        SKIP_INSTALL: true
+        ENABLE_USER_SCRIPT_SANDBOXING: false
+        HAKO_CORE_SLICE: macos-arm64_x86_64
+        HAKO_CORE_ARCHIVE: $(SRCROOT)/../../Hako.xcframework/$(HAKO_CORE_SLICE)/Hako.framework/Hako
+        OTHER_LDFLAGS:
+        - -Wl,-force_load,$(HAKO_CORE_ARCHIVE)
+        - -lresolv
+    preBuildScripts:
+    - name: Copy the Go core's public headers out of the locked xcframework
+      shell: /bin/sh
+      script: "set -eu\nsrc=\"$SRCROOT/../../Hako.xcframework/$HAKO_CORE_SLICE/Hako.framework/Headers\"\
+        \ndst=\"$TARGET_BUILD_DIR/$PUBLIC_HEADERS_FOLDER_PATH\"\nmkdir -p \"$dst\"\
+        \nfor h in ref.h Hako.objc.h Universe.objc.h Hako.h; do\n  cp -f \"$src/$h\"\
+        \ \"$dst/$h\"\ndone\n"
+      outputFiles:
+      - $(TARGET_BUILD_DIR)/$(PUBLIC_HEADERS_FOLDER_PATH)/ref.h
+      - $(TARGET_BUILD_DIR)/$(PUBLIC_HEADERS_FOLDER_PATH)/Hako.objc.h
+      - $(TARGET_BUILD_DIR)/$(PUBLIC_HEADERS_FOLDER_PATH)/Universe.objc.h
+      - $(TARGET_BUILD_DIR)/$(PUBLIC_HEADERS_FOLDER_PATH)/Hako.h
   HakoMac:
     type: application
     platform: macOS
@@ -299,13 +394,13 @@ targets:
       buildPhase: resources
     - path: Resources/Legal
       buildPhase: resources
-    - path: Resources/BundledGeoData/GeoIP.dat
+    - path: Resources/BundledGeoData/GeoSite.dat.xz
       buildPhase: resources
-    - path: Resources/BundledGeoData/GeoSite.dat
+    - path: Resources/BundledGeoData/geoip.metadb.xz
       buildPhase: resources
-    - path: Resources/BundledGeoData/geoip.metadb
+    - path: Resources/BundledGeoData/GeoIP.dat.xz
       buildPhase: resources
-    - path: Resources/BundledGeoData/ASN.mmdb
+    - path: Resources/BundledGeoData/ASN.mmdb.xz
       buildPhase: resources
     - path: Resources/BundledGeoData/BundledGeoDataManifest.json
       buildPhase: resources
@@ -313,15 +408,19 @@ targets:
       buildPhase: resources
     - path: ../../Vendor/HakoAdapter/Sources/HakoAdapter
     settings:
+      configs:
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: -Osize
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE)
         PRODUCT_NAME: Clash
-        MARKETING_VERSION: 1.0.9
-        CURRENT_PROJECT_VERSION: '45'
+        MARKETING_VERSION: 1.0.13
+        CURRENT_PROJECT_VERSION: '59'
         DEVELOPMENT_TEAM: $(HAKO_DEVELOPMENT_TEAM)
         CODE_SIGN_STYLE: Automatic
         ENABLE_USER_SCRIPT_SANDBOXING: false
         ASSETCATALOG_COMPILER_APPICON_NAME: ''
+        REMOVE_HEADERS_FROM_EMBEDDED_FRAMEWORKS: true
     info:
       path: Resources/macOS/HakoMacInfo.plist
       properties:
@@ -344,12 +443,14 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         LSApplicationCategoryType: public.app-category.utilities
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        NSCameraUsageDescription: Scan a subscription QR code to import a profile.
     entitlements:
       path: Resources/macOS/HakoMac.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
         com.apple.security.files.user-selected.read-write: true
+        com.apple.security.device.camera: true
         com.apple.security.application-groups:
         - $(HAKO_APP_GROUP)
         com.apple.developer.networking.networkextension:
@@ -365,8 +466,8 @@ targets:
     - package: HakoClientKit
     - package: HakoClientUI
     - package: HakoMacClient
-    - framework: ../../Hako.xcframework
-      embed: false
+    - target: HakoMacCore
+      embed: true
     - target: HakoMacExtension
       embed: true
     - target: HakoMacWidgets
@@ -390,6 +491,8 @@ targets:
     - path: Shared/HakoAppIdentifiers.swift
     - path: Shared/HakoDeviceModel.swift
       group: Sources/SystemIntegration
+    - path: Shared/HakoWidgetPlatform.swift
+      group: Sources/SystemIntegration
     - path: ../HakoClientUI/Sources/HakoClientUI/Features/Widgets/HakoWidgetSnapshot.swift
       group: Shared
     - path: ../HakoClientUI/Sources/HakoClientUI/Features/Widgets/HakoWidgetMailbox.swift
@@ -410,6 +513,9 @@ targets:
     - path: Resources/PrivacyInfo.xcprivacy
       buildPhase: resources
     settings:
+      configs:
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: -Osize
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE).widgets
         MACOSX_DEPLOYMENT_TARGET: '14.0'
@@ -452,11 +558,18 @@ targets:
       buildPhase: resources
     - path: ../../Vendor/HakoAdapter/Sources/HakoAdapter
     settings:
+      configs:
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: -Osize
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE).packet-tunnel
         PRODUCT_NAME: HakoMacExtension
-        MARKETING_VERSION: 1.0.9
-        CURRENT_PROJECT_VERSION: '45'
+        LD_RUNPATH_SEARCH_PATHS:
+        - $(inherited)
+        - '@executable_path/../Frameworks'
+        - '@executable_path/../../../../Frameworks'
+        MARKETING_VERSION: 1.0.13
+        CURRENT_PROJECT_VERSION: '59'
         DEVELOPMENT_TEAM: $(HAKO_DEVELOPMENT_TEAM)
         CODE_SIGN_STYLE: Automatic
     entitlements:
@@ -480,7 +593,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
     dependencies:
-    - framework: ../../Hako.xcframework
+    - target: HakoMacCore
       embed: false
     - sdk: NetworkExtension.framework
   HakoTV:
@@ -490,6 +603,8 @@ targets:
     - path: Sources/TV
     - path: Shared/ConfigResourceStore.swift
     - path: Shared/HakoAppIdentifiers.swift
+    - path: Shared/HakoMDNSProbeDriver.swift
+    - path: Shared/HakoDNSWireProbe.swift
     - path: Shared/HakoDeviceModel.swift
       group: Shared
     - path: ../HakoClientUI/Sources/HakoClientUI/Features/Rules/HakoRulesSnapshot.swift
@@ -537,31 +652,39 @@ targets:
     - path: Sources/ConfigStore/InvalidDomainSites.swift
     - path: Sources/ConfigStore/OrderedJSON.swift
     - path: Sources/ConfigStore/PreflightService.swift
+    - path: Sources/ConfigStore/AppCoreSetup.swift
     - path: Sources/ConfigStore/BundledGeodataProvisioner.swift
     - path: Sources/ConfigStore/GeoSiteCompiler.swift
     - path: Sources/ConfigStore/GeoIPCompiler.swift
     - path: Sources/ConfigStore/ProviderStagingPublisher.swift
     - path: Sources/AppArchitecture/UDPFallbackGuard.swift
     - path: Sources/AppArchitecture/ProxyBrowsingVisibility.swift
+    - path: Sources/AppArchitecture/ProxyImportBridge.swift
+    - path: Sources/ConfigStore/SubscriptionError.swift
     - path: Shared/LocalNetworkPermission.swift
     - path: Sources/ConfigStore/CoreLogExcerpt.swift
     - path: Sources/ProxyShareModel.swift
     - path: Sources/ProfileListenerPorts.swift
     - path: Sources/ConfigStore/CredentialStore.swift
     - path: Sources/ConfigUI/ClientUserAgent.swift
+    - path: Sources/ConfigUI/IPStackSettings.swift
+    - path: Sources/ConfigUI/IPStackSettingsApplication.swift
+    - path: Sources/ConfigUI/ScriptEngine.swift
+    - path: Sources/VPNStartAuthorization.swift
+    - path: Sources/VPNStartFailureTracker.swift
     - path: Shared/HakoLogStore.swift
       group: Shared
     - path: Shared/HakoAppGroupContainer.swift
       group: Shared
-    - path: Resources/BundledGeoData/GeoIP.dat
+    - path: Resources/BundledGeoData/GeoSite.dat.xz
       buildPhase: resources
-    - path: Resources/BundledGeoData/GeoSite.dat
+    - path: Resources/BundledGeoData/geoip.metadb.xz
       buildPhase: resources
-    - path: Resources/BundledGeoData/geoip.metadb
+    - path: Resources/BundledGeoData/GeoIP.dat.xz
       buildPhase: resources
-    - path: Resources/BundledGeoData/ASN.mmdb
+    - path: Resources/BundledGeoData/ASN.mmdb.xz
       buildPhase: resources
-    - path: Resources/BundledGeoData/BundledGeoDataManifest.json
+    - path: Resources/tvOS/BundledGeoData/BundledGeoDataManifest.json
       buildPhase: resources
     - path: Resources/BundledGeoData/LICENSE.meta-rules-dat.txt
       buildPhase: resources
@@ -574,10 +697,14 @@ targets:
     - path: Resources/tvOS/Localization
       buildPhase: resources
     settings:
+      configs:
+        Debug: {}
+        Release: {}
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE)
         PRODUCT_NAME: HakoTV
-        MARKETING_VERSION: 1.0.10
+        MARKETING_VERSION: 1.0.11
+        CURRENT_PROJECT_VERSION: '31'
         DEVELOPMENT_TEAM: $(HAKO_DEVELOPMENT_TEAM)
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: HakoTV
@@ -595,6 +722,10 @@ targets:
           NSAllowsArbitraryLoads: true
         HakoSourceRevision: $(HAKO_SOURCE_REVISION)
         UILaunchScreen: {}
+        BGTaskSchedulerPermittedIdentifiers:
+        - $(HAKO_BUNDLE_BASE).refresh
+        UIBackgroundModes:
+        - fetch
     entitlements:
       path: Resources/tvOS/HakoTV.entitlements
       properties:
@@ -628,10 +759,14 @@ targets:
       buildPhase: resources
     - path: ../../Vendor/HakoAdapter/Sources/HakoAdapter
     settings:
+      configs:
+        Debug: {}
+        Release: {}
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(HAKO_BUNDLE_BASE).tvextension
         PRODUCT_NAME: HakoTVExtension
-        MARKETING_VERSION: 1.0.10
+        MARKETING_VERSION: 1.0.11
+        CURRENT_PROJECT_VERSION: '31'
         DEVELOPMENT_TEAM: $(HAKO_DEVELOPMENT_TEAM)
         CODE_SIGN_STYLE: Automatic
     entitlements:

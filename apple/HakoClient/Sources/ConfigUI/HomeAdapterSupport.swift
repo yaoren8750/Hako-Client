@@ -51,6 +51,12 @@ struct ProfileConfigTally: Equatable {
         }
 
         let groups = (root["proxy-groups"] as? [[String: Any]]) ?? []
+         
+         
+         
+         
+         
+        let listedGroupCount = groups.filter { !ProxiesOverviewModel.isHiddenFlag($0["hidden"]) }.count
         let ruleProviders =
             (root["rule-providers"] as? [String: Any]) ?? [:]
         return ProfileConfigTally(
@@ -61,7 +67,7 @@ struct ProfileConfigTally: Equatable {
              
              
              
-            proxyGroups: groups.count
+            proxyGroups: listedGroupCount
                 + (tunnelRunning && !groups.contains { $0["name"] as? String == "GLOBAL" }
                     ? 1 : 0),
             rules: (root["rules"] as? [Any])?.count ?? 0,
@@ -417,7 +423,7 @@ struct HomeConnectionIssueView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Reset VPN Profile")
                             Text(
-                                "Recreates Clash’s VPN entry in Settings. Your Clash profiles, subscriptions, and credentials stay unchanged."
+                                "Recreates Clash’s VPN entry in Settings. Your Clash profiles, profile URLs, and credentials stay unchanged."
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)

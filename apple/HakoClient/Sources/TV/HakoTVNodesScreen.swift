@@ -33,6 +33,10 @@ struct HakoTVNodesScreen: View {
     var onPin: ((_ member: String, _ group: String) -> Void)?
      
      
+     
+    var onUnpin: ((HakoProxyGroupSnapshot) -> Void)?
+     
+     
     var onTestAll: ((HakoProxyGroupSnapshot) -> Void)?
      
     var onTest: ((HakoProxyMemberSnapshot) -> Void)?
@@ -40,11 +44,29 @@ struct HakoTVNodesScreen: View {
     @State private var shownGroupName: String?
 
      
-    private var visibleGroups: [HakoProxyGroupSnapshot] {
-        guard state.observations.proxies.hasValue else { return [] }
-        return Self.visibleGroups(state.proxyGroups, mode: state.observations.mode.hasValue ? state.outboundMode : .rule)
+     
+     
+     
+    private enum HeaderButton: Hashable { case unfix, testAll }
+    @FocusState private var headerFocus: HeaderButton?
+
+     
+     
+    private var browsingMode: HakoTVOutboundMode {
+        state.observations.mode.hasValue ? state.outboundMode : .rule
     }
 
+     
+    private var visibleGroups: [HakoProxyGroupSnapshot] {
+        guard state.observations.proxies.hasValue else { return [] }
+        return Self.visibleGroups(state.proxyGroups, mode: browsingMode)
+    }
+
+     
+     
+     
+     
+     
     private var shownGroup: HakoProxyGroupSnapshot? {
         visibleGroups.first { $0.name == shownGroupName } ?? visibleGroups.first
     }
@@ -88,12 +110,49 @@ struct HakoTVNodesScreen: View {
                     Button {
                         shownGroupName = group.name
                     } label: {
-                        LabeledContent {
-                            Text(group.currentSelection ?? "—")
-                        } label: {
-                            Text(group.name)
-                            Text(group.type)
+                         
+                         
+                         
+                         
+                         
+                         
+                         
+                         
+                         
+                         
+                         
+                         
+                         
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                Text(group.name)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                Text(Self.groupRowValue(for: group, state: state))
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                    .monospacedDigit()
+                                    .font(Self.detailFont)
+                                    .foregroundStyle(.secondary)
+                            }
+                             
+                             
+                             
+                             
+                            HStack(spacing: 0) {
+                                Text(Self.groupRowTypeLead(for: group))
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                if let selection = Self.groupRowSelection(for: group) {
+                                    Text(selection)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                            .font(Self.detailFont)
+                            .foregroundStyle(.secondary)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                      
                      
@@ -115,11 +174,31 @@ struct HakoTVNodesScreen: View {
         if let group = shownGroup {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(Self.header(for: group))
+                    Text(Self.header(for: group, mode: browsingMode))
                         .font(.caption)
                         .textCase(.uppercase)
                         .foregroundStyle(.tertiary)
                     Spacer(minLength: 20)
+                    if Self.offersUnpin(for: group) {
+                         
+                         
+                         
+                         
+                         
+                        Button {
+                            headerFocus = .testAll
+                            if let onUnpin {
+                                onUnpin(group)
+                            } else {
+                                state.unpin(group: group.name)
+                            }
+                        } label: {
+                            Text(Self.unfixTitle)
+                                .font(.caption)
+                        }
+                        .accessibilityIdentifier("tvos.nodes.unfix")
+                        .focused($headerFocus, equals: .unfix)
+                    }
                     if Self.offersTestAll(for: group) {
                          
                          
@@ -133,8 +212,16 @@ struct HakoTVNodesScreen: View {
                                 .font(.caption)
                         }
                         .accessibilityIdentifier("tvos.nodes.test-all")
+                        .focused($headerFocus, equals: .testAll)
                     }
                 }
+                 
+                 
+                 
+                 
+                 
+                 
+                .focusSection()
                 if let refusal = group.memberChoiceRefusal {
                      
                     Text(refusal.localizedForTelevision)
@@ -143,11 +230,11 @@ struct HakoTVNodesScreen: View {
                 }
                 ScrollView {
                     LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible(), spacing: 20), count: Self.columnCount(for: group)),
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 20), count: Self.columnCount(for: group, mode: browsingMode)),
                         alignment: .leading,
                         spacing: 20
                     ) {
-                        ForEach(group.members) { member in
+                        ForEach(Self.browsedMembers(of: group, mode: browsingMode)) { member in
                             cell(member, in: group)
                         }
                     }
@@ -224,15 +311,12 @@ struct HakoTVNodesScreen: View {
                     }
                 }
                 HStack {
-                    Text(member.type)
+                    Text(Self.typeLabel(for: member, state: state))
                         .font(Self.detailFont)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 12)
-                    Text(Self.latencyLabel(
-                        state.latency[member.name] ?? .untested,
-                        failureCategory: state.failureReasons[member.name] ?? ""
-                    ))
+                    Text(Self.readingLabel(for: member, state: state))
                         .font(Self.detailFont.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -291,7 +375,16 @@ struct HakoTVNodesScreen: View {
      
      
     static func columnCount(for group: HakoProxyGroupSnapshot) -> Int {
-        let longest = group.members.map(\.name.count).max() ?? 0
+        columnCount(for: group.members)
+    }
+
+     
+    static func columnCount(for group: HakoProxyGroupSnapshot, mode: HakoTVOutboundMode) -> Int {
+        columnCount(for: browsedMembers(of: group, mode: mode))
+    }
+
+    private static func columnCount(for members: [HakoProxyMemberSnapshot]) -> Int {
+        let longest = members.map(\.name.count).max() ?? 0
         return longest > longNameThreshold ? 2 : 3
     }
 
@@ -313,6 +406,25 @@ struct HakoTVNodesScreen: View {
      
      
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func browsedMembers(of group: HakoProxyGroupSnapshot, mode: HakoTVOutboundMode) -> [HakoProxyMemberSnapshot] {
+        ProxyBrowsingVisibility.members(
+            group.members,
+            of: group.name,
+            mode: .init(coreValue: mode.kernelToken),
+            name: { $0.name }
+        )
+    }
+
     static func visibleGroups(
         _ groups: [HakoProxyGroupSnapshot],
         mode: HakoTVOutboundMode
@@ -346,8 +458,16 @@ struct HakoTVNodesScreen: View {
      
      
     static func header(for group: HakoProxyGroupSnapshot) -> String {
-        let count = group.members.count
-        return count == 1
+        header(for: group, count: group.isEmpty ? 0 : group.members.count)
+    }
+
+     
+    static func header(for group: HakoProxyGroupSnapshot, mode: HakoTVOutboundMode) -> String {
+        header(for: group, count: group.isEmpty ? 0 : browsedMembers(of: group, mode: mode).count)
+    }
+
+    private static func header(for group: HakoProxyGroupSnapshot, count: Int) -> String {
+        count == 1
             ? String(localized: "\(group.name) · 1 node · \(group.type)")
             : String(localized: "\(group.name) · \(count) nodes · \(group.type)")
     }
@@ -368,7 +488,135 @@ struct HakoTVNodesScreen: View {
      
      
     static func offersTestAll(for group: HakoProxyGroupSnapshot) -> Bool {
-        !group.members.isEmpty
+        !group.isEmpty && !group.members.isEmpty
+    }
+
+     
+     
+     
+     
+    static func group(named name: String, state: HakoTVProductState) -> HakoProxyGroupSnapshot? {
+        state.proxyGroups.first { $0.name == name } ?? state.hiddenProxyGroups.first { $0.name == name }
+    }
+
+     
+     
+     
+    static func isEmptyGroup(_ member: HakoProxyMemberSnapshot, state: HakoTVProductState) -> Bool {
+        member.isGroup && group(named: member.name, state: state)?.isEmpty == true
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func displayedLatency(for member: HakoProxyMemberSnapshot, state: HakoTVProductState) -> HakoProxyLatencyState {
+        if isEmptyGroup(member, state: state) { return .untested }
+        let direct = state.latency[member.name] ?? .untested
+        guard direct == .untested, member.isGroup,
+              let group = group(named: member.name, state: state),
+              let route = group.resolvedRuntimeRoute ?? group.runtimeSelection
+        else { return direct }
+        return state.latency[route] ?? .untested
+    }
+
+     
+     
+     
+    static func displayedLatency(forGroup group: HakoProxyGroupSnapshot, state: HakoTVProductState) -> HakoProxyLatencyState {
+        displayedLatency(for: HakoProxyMemberSnapshot(name: group.name, type: group.type, isGroup: true), state: state)
+    }
+
+     
+     
+     
+    static func readingLabel(for member: HakoProxyMemberSnapshot, state: HakoTVProductState) -> String {
+        if isEmptyGroup(member, state: state) { return "" }
+        return latencyLabel(
+            displayedLatency(for: member, state: state),
+            failureCategory: state.failureReasons[member.name] ?? ""
+        )
+    }
+
+     
+     
+     
+     
+     
+     
+    static func groupRowSubtitle(for group: HakoProxyGroupSnapshot, state: HakoTVProductState) -> String {
+        groupRowTypeLead(for: group) + (groupRowSelection(for: group) ?? "")
+    }
+
+     
+     
+     
+    static func groupRowTypeLead(for group: HakoProxyGroupSnapshot) -> String {
+        if group.isEmpty { return "\(group.type) \(noNodes)" }
+        return group.currentSelection == nil ? group.type : "\(group.type) · "
+    }
+
+     
+     
+    static func groupRowSelection(for group: HakoProxyGroupSnapshot) -> String? {
+        group.isEmpty ? nil : group.currentSelection
+    }
+
+     
+     
+     
+     
+     
+    static func groupRowValue(for group: HakoProxyGroupSnapshot, state: HakoTVProductState) -> String {
+        guard !group.isEmpty else { return "" }
+        return latencyLabel(
+            displayedLatency(forGroup: group, state: state),
+            failureCategory: state.failureReasons[group.name] ?? ""
+        )
+    }
+
+     
+     
+     
+     
+     
+    static func offersUnpin(for group: HakoProxyGroupSnapshot) -> Bool {
+        group.canBeUnpinned && group.configuredSelection != nil
+    }
+
+     
+    static var unfixTitle: String { String(localized: "Unfix") }
+
+     
+     
+     
+     
+     
+    static func typeLabel(for member: HakoProxyMemberSnapshot, state: HakoTVProductState) -> String {
+        if state.easyTierNodeNames.contains(member.name) {
+            return String(localized: "easytier · Not supported")
+        }
+        if isEmptyGroup(member, state: state) {
+            return "\(member.type) \(noNodes)"
+        }
+        return member.type
+    }
+
+     
+     
+    private static var noNodes: String { String(localized: "· No nodes") }
+
+     
+     
+     
+    static func sweepMembers(of group: HakoProxyGroupSnapshot, state: HakoTVProductState) -> [HakoProxyMemberSnapshot] {
+        guard !group.isEmpty else { return [] }
+        return group.members.filter { !isEmptyGroup($0, state: state) }
     }
 
     static func isTesting(_ group: HakoProxyGroupSnapshot, state: HakoTVProductState) -> Bool {
@@ -382,7 +630,7 @@ struct HakoTVNodesScreen: View {
      
      
     static func beginTesting(_ group: HakoProxyGroupSnapshot, state: inout HakoTVProductState) {
-        for member in group.members {
+        for member in sweepMembers(of: group, state: state) {
             state.latency[member.name] = .testing
         }
     }

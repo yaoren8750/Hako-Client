@@ -96,14 +96,32 @@ public struct HakoProfileSnapshot:
     public let id: Profile.ID
     public let label: String
     public let source: HakoProfileSourceKind
-    public let sourceSummary: HakoDisplayText
-    public let subscription: HakoProfileSubscriptionSnapshot?
-    public let lastUpdatedAt: Date?
+    public var sourceSummary: HakoDisplayText
+    public var subscription: HakoProfileSubscriptionSnapshot?
+    public var lastUpdatedAt: Date?
     public let autoUpdate: Bool
     public let updateIntervalHours: Int
     public let isCurrent: Bool
     public let isBusy: Bool
     public let canEditSource: Bool
+    public let followsConfigurationSourceUpdates: Bool?
+     
+     
+     
+    public let overrideScriptName: String?
+     
+     
+     
+     
+     
+    public let customRulesCount: Int
+    public let isComposed: Bool?
+     
+     
+     
+    public let canUseOriginalConfiguration: Bool
+    public let configurationSourceNames: [String]?
+    public let configurationRuleName: String?
     public let canDelete: Bool
     public let deleteSubtitle: HakoDisplayText
     public let runtimeSummary: HakoDisplayText
@@ -113,6 +131,13 @@ public struct HakoProfileSnapshot:
      
      
     public let heldBackUpdates: [HakoProfileHeldBackUpdate]
+     
+     
+     
+    public let badges: [HakoDisplayText]
+     
+     
+    public let note: HakoDisplayText?
 
     public init(
         id: Profile.ID,
@@ -128,13 +153,30 @@ public struct HakoProfileSnapshot:
         canEditSource: Bool = false,
         canDelete: Bool = true,
         deleteSubtitle: HakoDisplayText = "Remove this profile from Clash",
-        runtimeSummary: HakoDisplayText = "Local cache · read-only",
+        runtimeSummary: HakoDisplayText = "read-only",
         requiresPlaintextExportConfirmation: Bool = false,
         featureAvailability:
             HakoProfileFeatureAvailabilitySnapshot? = nil,
-        heldBackUpdates: [HakoProfileHeldBackUpdate] = []
+        heldBackUpdates: [HakoProfileHeldBackUpdate] = [],
+        isComposed: Bool? = nil,
+        canUseOriginalConfiguration: Bool = false,
+        configurationSourceNames: [String]? = nil, configurationRuleName: String? = nil,
+        followsConfigurationSourceUpdates: Bool? = nil,
+        overrideScriptName: String? = nil,
+        customRulesCount: Int = 0,
+        badges: [HakoDisplayText] = [],
+        note: HakoDisplayText? = nil
     ) {
         self.id = id
+        self.badges = badges
+        self.note = note
+        self.overrideScriptName = overrideScriptName
+        self.customRulesCount = max(0, customRulesCount)
+        self.followsConfigurationSourceUpdates = followsConfigurationSourceUpdates
+        self.isComposed = isComposed
+        self.canUseOriginalConfiguration = canUseOriginalConfiguration
+        self.configurationSourceNames = configurationSourceNames
+        self.configurationRuleName = configurationRuleName
         self.heldBackUpdates = heldBackUpdates
         self.label = String(label.prefix(256))
         self.source = source
@@ -154,6 +196,12 @@ public struct HakoProfileSnapshot:
         self.featureAvailability = featureAvailability
     }
 
+     
+     
+    public static func customRulesValue(count: Int, locale: Locale) -> HakoDisplayText {
+        count <= 0 ? .copy("None") : .verbatim(HakoCopy.format("%d rules", locale: locale, count))
+    }
+
     public var canRename: Bool {
         featureAvailability?.canRename ?? true
     }
@@ -161,6 +209,13 @@ public struct HakoProfileSnapshot:
     public var canSync: Bool {
         featureAvailability?.canSync ?? true
     }
+
+     
+     
+     
+     
+    public var isTakenOverByScript: Bool { overrideScriptName != nil }
+    public static let takenOverByScript: HakoDisplayText = .copy("Taken over by the override script")
 
     public var canConfigureSubscription: Bool {
         featureAvailability?.canConfigureSubscription ?? true
@@ -295,6 +350,18 @@ public struct HakoProfileBatchReportSnapshot:
 
      
      
+    public var needsAttention: Bool {
+        failedCount > 0 || wasCancelled
+    }
+
+     
+     
+    public var settledKey: String {
+        "\(id.uuidString):\(isRunning)"
+    }
+
+     
+     
      
      
      
@@ -349,6 +416,10 @@ public struct HakoProfilesSnapshot: Codable, Equatable, Sendable {
     public let batchReport: HakoProfileBatchReportSnapshot?
     public let featureAvailability:
         HakoProfilesFeatureAvailabilitySnapshot?
+     
+     
+     
+    public let libraryHasFetchableSource: Bool
 
     public init(
         profiles: [HakoProfileSnapshot] = [],
@@ -356,13 +427,31 @@ public struct HakoProfilesSnapshot: Codable, Equatable, Sendable {
         statusMessage: HakoDisplayText = .copy(""),
         batchReport: HakoProfileBatchReportSnapshot? = nil,
         featureAvailability:
-            HakoProfilesFeatureAvailabilitySnapshot? = nil
+            HakoProfilesFeatureAvailabilitySnapshot? = nil,
+        libraryHasFetchableSource: Bool = false
     ) {
         self.profiles = Array(profiles.prefix(1_024))
         self.failure = failure
         self.statusMessage = statusMessage.bounded(to: 512)
         self.batchReport = batchReport
         self.featureAvailability = featureAvailability
+        self.libraryHasFetchableSource = libraryHasFetchableSource
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case profiles, failure, statusMessage, batchReport, featureAvailability, libraryHasFetchableSource
+    }
+
+     
+     
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        profiles = try container.decode([HakoProfileSnapshot].self, forKey: .profiles)
+        failure = try container.decodeIfPresent(HakoProfilesFailureSnapshot.self, forKey: .failure)
+        statusMessage = try container.decode(HakoDisplayText.self, forKey: .statusMessage)
+        batchReport = try container.decodeIfPresent(HakoProfileBatchReportSnapshot.self, forKey: .batchReport)
+        featureAvailability = try container.decodeIfPresent(HakoProfilesFeatureAvailabilitySnapshot.self, forKey: .featureAvailability)
+        libraryHasFetchableSource = try container.decodeIfPresent(Bool.self, forKey: .libraryHasFetchableSource) ?? false
     }
 
     public func profile(id: Profile.ID) -> HakoProfileSnapshot? {

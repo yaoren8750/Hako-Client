@@ -12,11 +12,11 @@ enum ProfileInstallLinkError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unsupportedLink:
-            return "This configuration link is not supported."
+            return "This install link is not supported."
         case .missingSubscription:
-            return "The configuration link does not contain a subscription URL."
+            return "The install link does not contain a profile URL."
         case .unusableSubscription:
-            return "The configuration link does not contain a usable subscription address."
+            return "The install link does not contain a usable profile URL."
         case .unsupportedFile:
             return "That file is not a configuration Clash can read."
         case .fileTooLarge:
@@ -309,6 +309,6 @@ final class ProfileImportRouter: ObservableObject {
             error,
             context: .localImport,
             preservesLastKnownGood: false
-        )?.localizedDescription ?? "The configuration could not be imported."
+        )?.localizedDescription ?? "The profile could not be imported."
     }
 }

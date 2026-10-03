@@ -15,6 +15,12 @@ import Foundation
  
 struct HakoWidgetPowerIntent: SetValueIntent {
     static let title: LocalizedStringResource = "Set Clash VPN From Widget"
+     
+     
+     
+     
+     
+    static var isDiscoverable: Bool { false }
     static var openAppWhenRun: Bool { false }
 
     @Parameter(title: "VPN Connected")
@@ -44,8 +50,24 @@ struct HakoWidgetPowerIntent: SetValueIntent {
 
  
  
+struct HakoWidgetRefreshIntent: AppIntent {
+    static let title: LocalizedStringResource = "Refresh Clash Widget"
+    static var isDiscoverable: Bool { false }
+    static var openAppWhenRun: Bool { false }
+
+    func perform() async throws -> some IntentResult {
+        .result()
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
 struct HakoWidgetSetModeIntent: AppIntent {
     static let title: LocalizedStringResource = "Set Clash Mode"
+    static var isDiscoverable: Bool { false }
     static var openAppWhenRun: Bool { false }
 
     @Parameter(title: "Mode")
@@ -59,7 +81,15 @@ struct HakoWidgetSetModeIntent: AppIntent {
 
     func perform() async throws -> some IntentResult {
         if let mode = HakoWidgetMode(rawValue: mode) {
-            _ = await HakoWidgetMailboxClient.requestAndWait(.setMode(mode), group: nil)
+            do {
+                try HakoWidgetMailboxClient.store.writeModeChoice(HakoWidgetModeChoice(mode: mode, at: Date()))
+            } catch {
+                HakoLogStore.shared.append("widget: mode choice not written  \(error.localizedDescription)", stream: .app, level: .warning)
+            }
+             
+            if await HakoVPNControlDriver.state(journal: false)?.active == true {
+                _ = await HakoWidgetMailboxClient.requestAndWait(.setMode(mode), group: nil)
+            }
         }
         return .result()
     }
@@ -69,6 +99,7 @@ struct HakoWidgetSetModeIntent: AppIntent {
  
 struct HakoWidgetSelectIntent: AppIntent {
     static let title: LocalizedStringResource = "Select Clash Node"
+    static var isDiscoverable: Bool { false }
     static var openAppWhenRun: Bool { false }
 
     @Parameter(title: "Group")

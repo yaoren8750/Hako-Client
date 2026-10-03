@@ -46,6 +46,39 @@ public enum HakoLogStream: String, CaseIterable, Sendable {
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
+public enum HakoStartupSidecar: CaseIterable, Sendable {
+    case breadcrumb
+    case phases
+
+     
+    public var label: String {
+        switch self {
+        case .breadcrumb: return "startup-breadcrumb"
+        case .phases: return "core-phases"
+        }
+    }
+
+     
+    public var relativePath: String {
+        switch self {
+        case .breadcrumb: return "working/startup-breadcrumb.json"
+        case .phases: return "hako-core-phases.log"
+        }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
 public enum HakoLogRetention: String, CaseIterable, Sendable {
     case oneDay
     case sevenDays
@@ -74,11 +107,19 @@ public enum HakoLogRetention: String, CaseIterable, Sendable {
  
  
  
+ 
+ 
 public enum HakoLogSettings {
     public static let recordingKey = "logs.recording"
 
+    #if os(tvOS)
+    public static let defaultRecording = true
+    #else
+    public static let defaultRecording = false
+    #endif
+
     public static func isRecording(from defaults: UserDefaults) -> Bool {
-        defaults.object(forKey: recordingKey) as? Bool ?? true
+        defaults.object(forKey: recordingKey) as? Bool ?? defaultRecording
     }
 
     public static func setRecording(_ value: Bool, in defaults: UserDefaults) {
@@ -120,9 +161,133 @@ public enum HakoLogSettings {
     ) {
         defaults.set(levels, forKey: severityFilterKey)
     }
+
+     
+     
+     
+    public static let levelDirectiveKey = "logs.levelDirective"
+
+    public enum LevelDirective: Equatable, Sendable {
+        case followProfile
+        case forced(HakoLogLevel)
+
+        public var rawValue: String? {
+            switch self {
+            case .followProfile: return nil
+            case .forced(let level): return level.rawValue
+            }
+        }
+
+        public init(rawValue: String?) {
+            guard let rawValue, !rawValue.isEmpty, rawValue != "follow" else {
+                self = .followProfile
+                return
+            }
+            if let level = HakoLogLevel(rawValue: rawValue.lowercased()) {
+                self = .forced(level)
+            } else {
+                self = .followProfile
+            }
+        }
+    }
+
+    public static func levelDirective(from defaults: UserDefaults) -> LevelDirective {
+        LevelDirective(rawValue: defaults.string(forKey: levelDirectiveKey))
+    }
+
+    public static func setLevelDirective(
+        _ directive: LevelDirective,
+        in defaults: UserDefaults
+    ) {
+        let previous = defaults.string(forKey: levelDirectiveKey)
+        if let raw = directive.rawValue {
+            defaults.set(raw, forKey: levelDirectiveKey)
+        } else {
+            defaults.removeObject(forKey: levelDirectiveKey)
+        }
+         
+         
+         
+         
+         
+         
+        if previous != defaults.string(forKey: levelDirectiveKey) {
+            NotificationCenter.default.post(name: levelDirectiveDidChange, object: nil)
+        }
+    }
+
+     
+    public static let levelDirectiveDidChange = Notification.Name(
+        "network.hako.logs.levelDirectiveDidChange"
+    )
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func liveStreamLevel(
+        directive: LevelDirective,
+        profileLevel: String?
+    ) -> String {
+        switch directive {
+        case .forced(let level):
+            return level.rawValue
+        case .followProfile:
+            let declared = profileLevel?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return declared == HakoLogLevel.debug.rawValue ? "debug" : "info"
+        }
+    }
+
+    public static func liveStreamLevel(from defaults: UserDefaults) -> String {
+        liveStreamLevel(
+            directive: levelDirective(from: defaults),
+            profileLevel: activeProfileLogLevel(from: defaults)
+        )
+    }
+
+     
+    public static let activeProfileLogLevelKey = "logs.activeProfileLevel"
+
+    public static func activeProfileLogLevel(from defaults: UserDefaults) -> String? {
+        defaults.string(forKey: activeProfileLogLevelKey)
+    }
+
+    public static func setActiveProfileLogLevel(_ level: String?, in defaults: UserDefaults) {
+        let previous = defaults.string(forKey: activeProfileLogLevelKey)
+        if let level, !level.isEmpty {
+            defaults.set(level, forKey: activeProfileLogLevelKey)
+        } else {
+            defaults.removeObject(forKey: activeProfileLogLevelKey)
+        }
+         
+         
+         
+        if previous != defaults.string(forKey: activeProfileLogLevelKey) {
+            NotificationCenter.default.post(name: activeProfileLogLevelDidChange, object: nil)
+        }
+    }
+
+     
+     
+    public static let activeProfileLogLevelDidChange = Notification.Name(
+        "network.hako.logs.activeProfileLevelDidChange"
+    )
 }
 
-public enum HakoLogLevel: String, Sendable {
+public enum HakoLogLevel: String, Sendable, CaseIterable {
+    case silent
     case error
     case warning
     case info
@@ -140,12 +305,85 @@ public enum HakoLogLevel: String, Sendable {
  
  
  
+ 
+ 
+final class HakoLogBudget: @unchecked Sendable {
+    private let lock = NSLock()
+    let maximumBytes: Int
+    let maximumCount: Int
+    private var bytes = 0
+    private var count = 0
+    private var dropped = 0
+
+    init(maximumBytes: Int, maximumCount: Int) {
+        self.maximumBytes = maximumBytes
+        self.maximumCount = maximumCount
+    }
+
+    func reserve(_ size: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard size >= 0, size <= maximumBytes - bytes, count < maximumCount else {
+            dropped += 1
+            return false
+        }
+        bytes += size; count += 1
+        return true
+    }
+
+    @discardableResult func release(_ size: Int) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        bytes -= size; count -= 1
+        let lost = dropped
+        dropped = 0
+        return lost
+    }
+
+    var snapshot: (bytes: Int, count: Int, dropped: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (bytes, count, dropped)
+    }
+}
+
+ 
+struct HakoLogBuffer {
+    let maximumBytes: Int
+    let maximumCount: Int
+    private(set) var lines: [String] = []
+    private(set) var bytes = 0
+    private(set) var dropped = 0
+    var isEmpty: Bool { lines.isEmpty }
+
+    mutating func append(contentsOf incoming: [String]) {
+        for line in incoming {
+            let size = line.utf8.count
+            guard size <= maximumBytes else { dropped += 1; continue }
+            while !lines.isEmpty && (bytes + size > maximumBytes || lines.count >= maximumCount) {
+                bytes -= lines.removeFirst().utf8.count
+                dropped += 1
+            }
+            lines.append(line); bytes += size
+        }
+    }
+
+    mutating func removeAll(keepingCapacity: Bool = false) {
+        lines.removeAll(keepingCapacity: keepingCapacity)
+        bytes = 0; dropped = 0
+    }
+}
+
 public final class HakoLogStore: @unchecked Sendable {
     public static let shared = HakoLogStore()
 
     private let directory: URL?
     private let fileManager: FileManager
-    private let queue = DispatchQueue(label: "network.hako.logstore")
+    private let queue: DispatchQueue
+     
+    private let coreBudget = HakoLogBudget(maximumBytes: 512 * 1024, maximumCount: 512)
+    private let appBudget = HakoLogBudget(maximumBytes: 128 * 1024, maximumCount: 256)
+
+    func pendingUsage(_ stream: HakoLogStream) -> (bytes: Int, count: Int, dropped: Int) {
+        (stream == .core ? coreBudget : appBudget).snapshot
+    }
     private let clock: () -> Date
     private let settings: UserDefaults?
      
@@ -159,12 +397,25 @@ public final class HakoLogStore: @unchecked Sendable {
         directory: URL? = HakoLogStore.defaultDirectory(),
         fileManager: FileManager = .default,
         clock: @escaping () -> Date = Date.init,
-        settings: UserDefaults? = HakoLogStore.defaultSettings()
+        settings: UserDefaults? = HakoLogStore.defaultSettings(),
+        writeQueue: DispatchQueue? = nil
     ) {
         self.directory = directory
         self.fileManager = fileManager
         self.clock = clock
         self.settings = settings
+        self.queue = writeQueue ?? DispatchQueue(label: "network.hako.logstore")
+    }
+
+     
+     
+    private static func coreLogLevel(_ message: String) -> HakoLogLevel? {
+        guard message.hasPrefix("time="), let range = message.range(of: " level=") else { return nil }
+        let value = message[range.upperBound...].prefix { !$0.isWhitespace }
+        switch value {
+        case "fatal", "panic": return .error
+        default: return HakoLogLevel(rawValue: String(value))
+        }
     }
 
     public static func defaultSettings() -> UserDefaults? {
@@ -191,7 +442,8 @@ public final class HakoLogStore: @unchecked Sendable {
          
         guard !message.isEmpty else { return }
         let now = clock()
-        let stamped = "\(Self.timestamp(now))  \(level.rawValue.uppercased())  \(message)\n"
+        let recordedLevel = stream == .core ? Self.coreLogLevel(message) ?? level : level
+        let stamped = "\(Self.timestamp(now))  \(recordedLevel.rawValue.uppercased())  \(message)\n"
         let day = Self.day(now)
          
          
@@ -214,17 +466,20 @@ public final class HakoLogStore: @unchecked Sendable {
          
          
          
-        if isStartingUp() {
-            queue.sync {
-                write(stamped, stream: stream, on: day)
-                pruneExpired(stream, now: now)
-            }
-            return
-        }
-        queue.async { [weak self] in
+        let budget = stream == .core ? coreBudget : appBudget
+        let size = stamped.utf8.count
+        guard budget.reserve(size) else { return }
+        let operation: @Sendable () -> Void = { [weak self] in
             self?.write(stamped, stream: stream, on: day)
             self?.pruneExpired(stream, now: now)
+            let lost = budget.release(size)
+            if lost > 0 {
+                self?.write("\(Self.timestamp(now))  WARNING  Log queue full; dropped \(lost) lines.\n",
+                            stream: stream, on: day)
+            }
         }
+        if isStartingUp() { queue.sync(execute: operation) }
+        else { queue.async(execute: operation) }
     }
 
      
@@ -577,19 +832,46 @@ public final class HakoLogStore: @unchecked Sendable {
      
      
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
     @discardableResult
-    public func writeExport(to destination: URL) -> Bool {
+    public func writeExport(to destination: URL, device: String = "") -> Bool {
         let fileManager = self.fileManager
         guard fileManager.createFile(atPath: destination.path, contents: nil) else {
             return false
         }
         guard let handle = try? FileHandle(forWritingTo: destination) else { return false }
         defer { try? handle.close() }
+        if !device.isEmpty {
+            let body = device.hasSuffix("\n") ? device : "\(device)\n"
+            try? handle.write(contentsOf: Data("===== device =====\n\(body)".utf8))
+        }
         let urls = queue.sync { HakoLogStream.allCases.map { ($0, files(for: $0)) } }
-        for (index, entry) in urls.enumerated() {
-            let header = (index == 0 ? "" : "\n") + "===== \(entry.0.rawValue) =====\n"
+        var sections: [(label: String, urls: [URL])] = urls.map { ($0.0.rawValue, $0.1) }
+        if let container = directory?.deletingLastPathComponent() {
+            for sidecar in HakoStartupSidecar.allCases {
+                let url = container.appendingPathComponent(sidecar.relativePath)
+                guard fileManager.fileExists(atPath: url.path) else { continue }
+                sections.append((sidecar.label, [url]))
+            }
+        }
+        for (index, section) in sections.enumerated() {
+            let gap = index == 0 && device.isEmpty ? "" : "\n"
+            let header = "\(gap)===== \(section.label) =====\n"
             try? handle.write(contentsOf: Data(header.utf8))
-            for url in entry.1 {
+            for url in section.urls {
                 guard let reader = try? FileHandle(forReadingFrom: url) else { continue }
                 defer { try? reader.close() }
                 while let chunk = try? reader.read(upToCount: 256 * 1024), !chunk.isEmpty {

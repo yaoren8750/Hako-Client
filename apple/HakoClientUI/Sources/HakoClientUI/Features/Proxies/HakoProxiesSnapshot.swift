@@ -182,12 +182,25 @@ public struct HakoProxyMemberSnapshot:
      
      
     public let chainedThrough: String?
+     
+     
+     
+     
+    public let placeholderType: String?
+     
+     
+     
+     
+     
+    public let latencyKey: String
 
     public init(
         name: String,
         type: String,
         isGroup: Bool = false,
-        chainedThrough: String? = nil
+        chainedThrough: String? = nil,
+        placeholderType: String? = nil,
+        latencyKey: String? = nil
     ) {
          
          
@@ -199,6 +212,23 @@ public struct HakoProxyMemberSnapshot:
         self.type = String(type.prefix(256))
         self.isGroup = isGroup
         self.chainedThrough = chainedThrough.map { String($0.prefix(256)) }
+        self.placeholderType = placeholderType.map { String($0.prefix(64)) }
+        self.latencyKey = latencyKey ?? name
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, type, isGroup, chainedThrough, placeholderType, latencyKey
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        type = try container.decode(String.self, forKey: .type)
+        isGroup = try container.decodeIfPresent(Bool.self, forKey: .isGroup) ?? false
+        chainedThrough = try container.decodeIfPresent(String.self, forKey: .chainedThrough)
+        placeholderType = try container.decodeIfPresent(String.self, forKey: .placeholderType)
+         
+        latencyKey = try container.decodeIfPresent(String.self, forKey: .latencyKey) ?? name
     }
 }
 
@@ -219,6 +249,11 @@ public struct HakoProxyGroupSnapshot:
      
      
     public let icon: String?
+     
+     
+     
+     
+    public let emptyFallback: String?
 
     public init(
         name: String,
@@ -227,8 +262,13 @@ public struct HakoProxyGroupSnapshot:
         configuredSelection: String? = nil,
         runtimeSelection: String? = nil,
         resolvedRuntimeRoute: String? = nil,
-        icon: String? = nil
+        icon: String? = nil,
+        emptyFallback: String? = nil
     ) {
+        self.emptyFallback = emptyFallback.flatMap { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
          
          
          
@@ -260,6 +300,18 @@ public struct HakoProxyGroupSnapshot:
 
     public var currentSelection: String? {
         runtimeSelection ?? configuredSelection
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    public var isEmpty: Bool {
+        guard let emptyFallback else { return false }
+        return members.map(\.name) == [emptyFallback]
     }
 
     private var normalizedType: String {
@@ -372,7 +424,12 @@ public struct HakoProxyProviderSnapshot:
     Sendable
 {
     public var id: String { name }
+     
     public let name: String
+     
+     
+    public let displayName: String?
+    public var title: String { displayName ?? name }
     public let type: String
     public let nodeCount: Int?
      
@@ -402,6 +459,7 @@ public struct HakoProxyProviderSnapshot:
 
     public init(
         name: String,
+        displayName: String? = nil,
         type: String,
         nodeCount: Int? = nil,
         nodes: [HakoProxyMemberSnapshot]? = nil,
@@ -414,6 +472,7 @@ public struct HakoProxyProviderSnapshot:
          
          
         self.name = name
+        self.displayName = displayName
         self.type = String(type.prefix(256))
         self.nodeCount = nodeCount.map { max(0, $0) }
         self.nodes = nodes
@@ -441,6 +500,12 @@ public enum HakoProxiesCatalogState:
  
 public struct HakoProxiesSnapshot: Codable, Equatable, Sendable {
     public let groups: [HakoProxyGroupSnapshot]
+     
+     
+     
+     
+     
+    public let hiddenGroups: [HakoProxyGroupSnapshot]
     public let searchableProxies: [HakoProxySnapshot]
     public let providers: [HakoProxyProviderSnapshot]
     public let ungrouped: [HakoProxySnapshot]
@@ -479,6 +544,15 @@ public struct HakoProxiesSnapshot: Codable, Equatable, Sendable {
      
      
     public let rememberedExpandedGroups: Set<String>
+     
+     
+     
+    public var rememberedOpenGroup: String? = nil
+     
+     
+     
+     
+    public var readerFoldedAll: Bool? = nil
     public let displayPreferences: HakoProxiesDisplayPreferences
      
      
@@ -508,6 +582,22 @@ public struct HakoProxiesSnapshot: Codable, Equatable, Sendable {
     public let actionRefusals: [String: String]
 
      
+     
+     
+     
+     
+     
+     
+     
+     
+    public let editableMembers: Set<String>
+
+     
+    public func canEdit(_ member: HakoProxyMemberSnapshot) -> Bool {
+        !member.isGroup && editableMembers.contains(member.name)
+    }
+
+     
     public func offersUnpin(for group: HakoProxyGroupSnapshot) -> Bool {
         guard canUnpinGroups == true else { return false }
          
@@ -519,6 +609,7 @@ public struct HakoProxiesSnapshot: Codable, Equatable, Sendable {
 
     public init(
         groups: [HakoProxyGroupSnapshot] = [],
+        hiddenGroups: [HakoProxyGroupSnapshot] = [],
         searchableProxies: [HakoProxySnapshot] = [],
         providers: [HakoProxyProviderSnapshot] = [],
         ungrouped: [HakoProxySnapshot] = [],
@@ -535,9 +626,13 @@ public struct HakoProxiesSnapshot: Codable, Equatable, Sendable {
         catalogState: HakoProxiesCatalogState? = nil,
         canRefreshCatalog: Bool? = nil,
         canUnpinGroups: Bool? = nil,
-        actionRefusals: [String: String] = [:]
+        actionRefusals: [String: String] = [:],
+        editableMembers: Set<String> = [],
+        rememberedOpenGroup: String? = nil,
+        readerFoldedAll: Bool? = nil
     ) {
         self.groups = groups
+        self.hiddenGroups = hiddenGroups
         self.searchableProxies = searchableProxies
         self.providers = providers
         self.ungrouped = ungrouped
@@ -567,6 +662,8 @@ public struct HakoProxiesSnapshot: Codable, Equatable, Sendable {
         let declared = Set(groups.map(\.name))
         self.rememberedExpandedGroups =
             rememberedExpandedGroups.intersection(declared)
+        self.rememberedOpenGroup = rememberedOpenGroup.flatMap { declared.contains($0) ? $0 : nil }
+        self.readerFoldedAll = readerFoldedAll
         self.displayPreferences = displayPreferences
         self.catalogState = catalogState.map {
             switch $0 {
@@ -585,6 +682,7 @@ public struct HakoProxiesSnapshot: Codable, Equatable, Sendable {
         self.canRefreshCatalog = canRefreshCatalog
         self.canUnpinGroups = canUnpinGroups
         self.actionRefusals = actionRefusals
+        self.editableMembers = editableMembers
     }
 
     public static let empty = HakoProxiesSnapshot()
@@ -594,11 +692,12 @@ public struct HakoProxiesSnapshot: Codable, Equatable, Sendable {
     }
 
     public func group(named name: String) -> HakoProxyGroupSnapshot? {
-        groups.first { $0.name == name }
+        groups.first { $0.name == name } ?? hiddenGroups.first { $0.name == name }
     }
 
     public func latency(for name: String) -> HakoProxyLatencyState {
-        latencyByName[name] ?? .untested
+         
+        latencyByName[name] ?? latencyByName[String(name.prefix(256))] ?? .untested
     }
 
     public func members(
@@ -684,6 +783,9 @@ public struct HakoProxiesSnapshot: Codable, Equatable, Sendable {
         guard member.isGroup, let group = group(named: member.name) else {
             return member.name
         }
+         
+         
+        guard !group.isEmpty else { return nil }
         if isConnected {
             return group.resolvedRuntimeRoute ?? group.runtimeSelection
         }
@@ -698,21 +800,69 @@ public struct HakoProxiesSnapshot: Codable, Equatable, Sendable {
     public func displayedLatency(
         for member: HakoProxyMemberSnapshot
     ) -> HakoProxyLatencyState {
-        let direct = latency(for: member.name)
-        guard direct == .untested,
-              let route = resolvedDisplayRoute(for: member) else {
-            return direct
+         
+         
+        if isEmptyGroup(member) { return .untested }
+        let direct = latency(for: member.latencyKey)
+        guard let route = resolvedDisplayRoute(for: member) else { return direct }
+         
+         
+        let routeKey = member.isGroup ? terminalLatencyKey(from: member.name, route: route) : route
+        let routed = latency(for: routeKey)
+         
+         
+         
+         
+         
+         
+         
+        if member.isGroup, routed != .untested { return routed }
+        return direct == .untested ? routed : direct
+    }
+
+     
+     
+     
+     
+    public func terminalLatencyKey(from groupName: String, route: String) -> String {
+         
+         
+         
+         
+        guard var current = group(named: groupName) else { return route }
+        var visited: Set<String> = [current.name]
+        while let next = current.runtimeSelection ?? current.configuredSelection,
+              let inner = group(named: next), visited.insert(inner.name).inserted {
+            current = inner
         }
-        return latency(for: route)
+        return current.members.first { $0.name == route && !$0.isGroup }?.latencyKey ?? route
+    }
+
+     
+     
+     
+    public func isEmptyGroup(_ member: HakoProxyMemberSnapshot) -> Bool {
+        member.isGroup && group(named: member.name)?.isEmpty == true
+    }
+
+     
+     
+     
+     
+    public func displayedLatency(
+        forGroup group: HakoProxyGroupSnapshot
+    ) -> HakoProxyLatencyState {
+        displayedLatency(for: HakoProxyMemberSnapshot(name: group.name, type: group.type, isGroup: true))
     }
 
     public func resolvedConfiguredRoute(
         forGroupNamed name: String
     ) -> String? {
         let selections = Dictionary(
-            uniqueKeysWithValues: groups.compactMap { group in
+            (groups + hiddenGroups).compactMap { group in
                 group.configuredSelection.map { (group.name, $0) }
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         return resolvedRoute(
             from: selections[name],
@@ -806,6 +956,31 @@ public enum HakoProxyBrowsing {
      
     public static func groupAnchor(_ name: String) -> AnyHashable {
         "proxies.group.\(name)"
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func groupToKeepOpen(
+        visible: [String],
+        expanded: Set<String>,
+        lastOpened: String?,
+        isSearching: Bool,
+        readerFoldedAll: Bool = false
+    ) -> String? {
+        guard !isSearching, !visible.isEmpty else { return nil }
+        guard !visible.contains(where: expanded.contains) else { return nil }
+         
+         
+         
+        guard !readerFoldedAll else { return nil }
+        if let lastOpened, visible.contains(lastOpened) { return lastOpened }
+        return visible.first
     }
 
     public static func columnCount(

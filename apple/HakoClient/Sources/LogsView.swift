@@ -91,6 +91,12 @@ struct LogShareSheet: UIViewControllerRepresentable {
 struct LogSettingsView: View {
     let onChange: () -> Void
 
+    static func followProfileTitle(profileLevel: String?) -> HakoDisplayText {
+        guard let level = profileLevel?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !level.isEmpty else { return .copy("Follow profile") }
+        return .format("Follow profile (%@)", [level])
+    }
+
      
      
      
@@ -99,22 +105,28 @@ struct LogSettingsView: View {
      
     @State private var dismiss = HakoDismissHandle()
     @Environment(\.hakoInsideProductModalPresentation) private var insideProductModal
-    @State private var recording = HakoLogSettings.isRecording(
-        from: GlobalConfig.appGroupDefaults
-    )
-    @State private var retention = HakoLogSettings.retention(
-        from: GlobalConfig.appGroupDefaults
-    )
+    private let defaults: UserDefaults
+    @State private var recording: Bool
+    @State private var retention: HakoLogRetention
+    @State private var directive: String?
+
+    init(defaults: UserDefaults = GlobalConfig.appGroupDefaults, onChange: @escaping () -> Void = {}) {
+        self.defaults = defaults
+        self.onChange = onChange
+        _recording = State(initialValue: HakoLogSettings.isRecording(from: defaults))
+        _retention = State(initialValue: HakoLogSettings.retention(from: defaults))
+        _directive = State(initialValue: HakoLogSettings.levelDirective(from: defaults).rawValue)
+    }
 
     var body: some View {
         HakoMacSettingsFormContainer {
             Section {
-                Toggle("Recording", isOn: $recording)
+                Toggle("Record Logs", isOn: $recording)
                     .accessibilityIdentifier("logs.settings.recording")
                     .onChange(of: recording) { value in
                         HakoLogSettings.setRecording(
                             value,
-                            in: GlobalConfig.appGroupDefaults
+                            in: defaults
                         )
                         onChange()
                     }
@@ -127,19 +139,41 @@ struct LogSettingsView: View {
                 .onChange(of: retention) { value in
                     HakoLogSettings.setRetention(
                         value,
-                        in: GlobalConfig.appGroupDefaults
+                        in: defaults
+                    )
+                    onChange()
+                }
+                 
+                 
+                 
+                 
+                 
+                 
+                Picker("Log level", selection: $directive) {
+                    Text(hako: Self.followProfileTitle(
+                        profileLevel: HakoLogSettings.activeProfileLogLevel(from: defaults)
+                    )).tag(nil as String?)
+                    ForEach(HakoLogLevel.allCases, id: \.self) { level in
+                        Text(hako: .copy(level.rawValue.capitalized)).tag(level.rawValue as String?)
+                    }
+                }
+                .accessibilityIdentifier("logs.settings.level")
+                .onChange(of: directive) { value in
+                    HakoLogSettings.setLevelDirective(
+                        HakoLogSettings.LevelDirective(rawValue: value),
+                        in: defaults
                     )
                     onChange()
                 }
             } footer: {
-                Text(
-                    LogRetentionCopy.summary(retention)
-                        + " Turning recording off stops new lines; what is already here stays until you clear it."
-                )
+                Text(hako: .copy("Record logs to help troubleshoot problems."))
             }
         }
         
         .hakoPageTitle("Log Settings")
+         
+         
+        .hakoProductModalRoot(title: "Log Settings")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 if !insideProductModal {
@@ -167,7 +201,9 @@ enum LogExportName {
     static func write(now: Date = Date()) -> URL? {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(current(now)).log")
-        guard HakoLogStore.shared.writeExport(to: url) else { return nil }
+        guard HakoLogStore.shared.writeExport(to: url, device: LogExportDeviceFacts.current(now: now).render()) else {
+            return nil
+        }
         return url
     }
 
@@ -200,6 +236,7 @@ struct LogsContent: View {
     let lines: [String]
     let isConnected: Bool
     let clear: () -> Void
+    var command: ClashCommandClient? = nil
      
     var query = ""
      
@@ -247,7 +284,13 @@ struct LogsContent: View {
                  
                 logSeverityFilter: HakoLogSettings.severityFilter(
                     from: GlobalConfig.appGroupDefaults
-                )
+                ),
+                activeProfileLogLevel: HakoLogSettings.activeProfileLogLevel(
+                    from: GlobalConfig.appGroupDefaults
+                ),
+                logLevelDirective: HakoLogSettings.levelDirective(
+                    from: GlobalConfig.appGroupDefaults
+                ).rawValue
             )
         HakoClientUI.HakoLogsView(
             snapshot: sharedSnapshot,
@@ -284,6 +327,14 @@ struct LogsContent: View {
                         value,
                         in: GlobalConfig.appGroupDefaults
                     )
+                    recordingGeneration &+= 1
+                case .setLogLevelDirective(let raw):
+                    let directive = HakoLogSettings.LevelDirective(rawValue: raw)
+                    HakoLogSettings.setLevelDirective(
+                        directive,
+                        in: GlobalConfig.appGroupDefaults
+                    )
+                    command?.refreshLogDisplayLevel()
                     recordingGeneration &+= 1
                 case .setLogSeverityFilter(let levels):
                      
@@ -323,7 +374,10 @@ struct LogsContent: View {
 #endif
         .hakoProductModal(isPresented: $showsSettings, role: .form) {
             HakoFeatureNavigationContainer {
-                LogSettingsView { recordingGeneration &+= 1 }
+                LogSettingsView {
+                    command?.refreshLogDisplayLevel()
+                    recordingGeneration &+= 1
+                }
             }
             .hakoModalPresentation(.form)
         }
@@ -365,7 +419,7 @@ struct LogsContent: View {
 #if os(macOS)
         MacSavePanel.write(
             suggestedName: "\(LogExportName.current()).log",
-            writing: { HakoLogStore.shared.writeExport(to: $0) },
+            writing: { HakoLogStore.shared.writeExport(to: $0, device: LogExportDeviceFacts.current().render()) },
             onFailure: { message in exportError = message }
         )
 #else

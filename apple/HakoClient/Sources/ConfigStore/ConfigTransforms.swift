@@ -360,6 +360,38 @@ enum ConfigTransforms {
         return names
     }
 
+     
+     
+     
+     
+    static func proxyCatalog(
+        configContent: String,
+        resourceMapJSON: String,
+        selectionsJSON: String
+    ) throws -> String {
+        var error: NSError?
+        guard let box = HakoProxyCatalogForIOS(configContent, resourceMapJSON, selectionsJSON, &error) else {
+            throw error ?? ConfigTransformsError.bridgeReturnedNil("ProxyCatalogForIOS")
+        }
+        return box.value
+    }
+
+     
+     
+     
+     
+    static func ruleProviderCatalog(
+        configContent: String,
+        resourceMapJSON: String,
+        compileRuleSets: Bool
+    ) throws -> String {
+        var error: NSError?
+        guard let box = HakoRuleProviderCatalogForIOS(configContent, resourceMapJSON, compileRuleSets, &error) else {
+            throw error ?? ConfigTransformsError.bridgeReturnedNil("RuleProviderCatalogForIOS")
+        }
+        return box.value
+    }
+
     static func finalize(
         mergedYAML: String,
         providerPaths: [String: String],
@@ -654,11 +686,54 @@ enum ConfigTransforms {
 
     static func applyClientRuntimePolicy(
         _ yaml: String,
-        udpFallback: UDPFallbackPolicy
+        udpFallback: UDPFallbackPolicy,
+        excludeAPNsRoute: Bool = false
     ) throws -> String {
         var root = try clientRuntimeRootBeforeUDPFallbackGuard(yaml)
         try appendUDPFallbackGuard(udpFallback, to: &root)
+        if excludeAPNsRoute {
+            appendAPNsFakeIPFilter(to: &root)
+        }
         return try jsonToYAML(root.serialized())
+    }
+
+     
+     
+     
+    static let kernelDefaultFakeIPFilter = [
+        "dns.msftnsci.com", "www.msftnsci.com", "www.msftconnecttest.com",
+    ]
+
+     
+     
+     
+     
+     
+    static let apnsFakeIPFilterEntry = "+.push.apple.com"
+
+     
+     
+     
+     
+     
+     
+     
+    private static func appendAPNsFakeIPFilter(to root: inout OrderedJSON) {
+        let dns = root.topLevelValue("dns")
+        if case let .string(mode)? = dns?.topLevelValue("fake-ip-filter-mode"),
+           mode.lowercased() == "whitelist" {
+            return
+        }
+        let entry = OrderedJSON.string(apnsFakeIPFilterEntry)
+        var filter: [OrderedJSON]
+        if case let .array(existing)? = dns?.topLevelValue("fake-ip-filter") {
+            filter = existing
+        } else {
+            filter = kernelDefaultFakeIPFilter.map { .string($0) }
+        }
+        guard !filter.contains(entry) else { return }
+        filter.append(entry)
+        root = root.setting(path: ["dns", "fake-ip-filter"], to: .array(filter))
     }
 
      
@@ -876,6 +951,13 @@ enum ConfigTransforms {
      
      
      
+     
+     
+     
+     
+     
+     
+     
     static let iosUnsupportedTopLevelKeys: Set<String> = [
          
          
@@ -887,6 +969,9 @@ enum ConfigTransforms {
          
          
         "external-controller-pipe",
+         
+         
+        "external-ui", "external-ui-url", "external-ui-name",
     ]
 
 }
@@ -901,7 +986,14 @@ final class ParsedConfigurationDerivations: @unchecked Sendable {
     private var values: [String: Any] = [:]
     private var inFlight: Set<String> = []
 
-    func value<T>(for key: String, _ compute: () -> T) -> T {
+     
+     
+     
+     
+     
+     
+     
+    func value<T>(for key: String, waits: Bool = !Thread.isMainThread, _ compute: () -> T) -> T {
         condition.lock()
         while true {
             if let known = values[key] as? T {
@@ -909,6 +1001,10 @@ final class ParsedConfigurationDerivations: @unchecked Sendable {
                 return known
             }
             if !inFlight.contains(key) { break }
+            if !waits {
+                condition.unlock()
+                return compute()
+            }
             condition.wait()
         }
         inFlight.insert(key)

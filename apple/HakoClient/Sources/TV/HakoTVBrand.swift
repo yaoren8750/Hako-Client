@@ -102,6 +102,9 @@ enum HakoTVTestStage: String, Equatable, Sendable {
     case editSubscription = "edit-subscription"
      
      
+    case profileRules = "profile-rules"
+     
+     
     case addSubscription = "add-subscription"
      
     case more
@@ -152,6 +155,17 @@ struct HakoTVLaunchOverrides: Equatable, Sendable {
     let useProfileURL: String?
      
      
+    let scriptURL: String?
+     
+     
+    let updatesScriptOnLaunch: Bool
+     
+     
+     
+     
+    let rulesForCurrent: HakoTVProfileRules?
+     
+     
      
     let allowLAN: Bool?
      
@@ -164,7 +178,18 @@ struct HakoTVLaunchOverrides: Equatable, Sendable {
      
     let probeSpec: String?
      
+     
+    let switchWatch: String?
+     
+     
+    let mdnsProbe: String?
+     
     let dumpsDiagnostics: Bool
+     
+     
+     
+     
+    let seedsProviderNotLaunched: Bool
      
      
      
@@ -181,10 +206,16 @@ struct HakoTVLaunchOverrides: Equatable, Sendable {
         updatesOnLaunch = environment["HAKO_TV_UPDATE_ON_LAUNCH"] == "1"
         disconnectsOnLaunch = environment["HAKO_TV_DISCONNECT_ON_LAUNCH"] == "1"
         useProfileURL = environment["HAKO_TV_USE_PROFILE_URL"]
+        scriptURL = environment["HAKO_TV_SCRIPT_URL"]
+        updatesScriptOnLaunch = environment["HAKO_TV_UPDATE_SCRIPT_ON_LAUNCH"] == "1"
+        rulesForCurrent = environment["HAKO_TV_RULES"].flatMap(HakoTVProfileRules.init(rawValue:))
         allowLAN = environment["HAKO_TV_ALLOW_LAN"].flatMap { $0 == "1" ? true : ($0 == "0" ? false : nil) }
         proxyShare = Self.proxyShareOverride(environment["HAKO_TV_PROXY_SHARE"])
         probeSpec = environment["HAKO_TV_PROBE"]
+        switchWatch = environment["HAKO_TV_SWITCH_WATCH"]
+        mdnsProbe = environment["HAKO_TV_MDNS_PROBE"]
         dumpsDiagnostics = environment["HAKO_TV_DIAG"] == "1"
+        seedsProviderNotLaunched = environment["HAKO_TV_SEED_PROVIDER_NOT_LAUNCHED"] == "1"
         opens = environment["HAKO_TV_OPEN"]
     }
 }

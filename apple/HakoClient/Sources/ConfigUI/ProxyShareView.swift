@@ -32,6 +32,10 @@ struct ProxyShareView: View {
         case external
     }
     @State private var portText = ""
+     
+     
+     
+    @State private var corePortText = ""
     @State private var username = ""
     @State private var password = ""
     @State private var confirmsReset = false
@@ -56,47 +60,12 @@ struct ProxyShareView: View {
          
          
          
-        VStack(spacing: 0) {
-            tabPickerBar
-            HakoMacSettingsFormContainer {
-                switch tab {
-                case .core:
-                    coreSwitchSection
-                     
-                     
-                     
-                    if kernelShare.isOn, let listener = kernelShare.listener {
-                        coreListenerSection(listener)
-                        coreConnectSection(listener)
-                    }
-                    if model.terminalListener != nil {
-                        terminalSection
-                    }
-                    coreExposureSection
-                    listenerDeviationsSection
-                case .native:
-                     
-                     
-                     
-                     
-                     
-                     
-                    actionSection
-                    if model.status.enabled {
-                        connectSection
-                    }
-                    serverSection
-                    securitySection
-                    if model.terminalListener != nil {
-                        terminalSection
-                    }
-                }
-            }
-        }
+        listenerContent
         .hakoPageTitle("LAN Proxy Share")
         .hakoDetailPageInsets()
         .task {
             hydrateDraft(overwriteUsername: true)
+            corePortText = model.kernelSharePortText
              
              
              
@@ -126,6 +95,7 @@ struct ProxyShareView: View {
         }
         .onReceive(model.terminalListenerDidChange) { _ in
             hydrateDraft(overwriteUsername: false)
+            corePortText = model.kernelSharePortText
         }
         .confirmationDialog(
             "Reset LAN proxy credentials?",
@@ -319,64 +289,85 @@ struct ProxyShareView: View {
      
      
      
-     
-     
-    private var tabPickerBar: some View {
+    @ViewBuilder
+    private var listenerContent: some View {
 #if os(macOS)
-        HStack(spacing: 2) {
-            tabSegment(.core, "Core", identifier: "proxyShare.tab.core")
-            tabSegment(.native, "Native Share", identifier: "proxyShare.tab.native")
+        TabView(selection: $tab) {
+            HakoMacSettingsFormContainer { coreSections }
+                .tabItem {
+                    Text(HakoCopy.key("Core"))
+                        .accessibilityIdentifier("proxyShare.tab.core")
+                }
+                .tag(LANShareTab.core)
+            HakoMacSettingsFormContainer { nativeSections }
+                .tabItem {
+                    Text(HakoCopy.key("Native Share"))
+                        .accessibilityIdentifier("proxyShare.tab.native")
+                }
+                .tag(LANShareTab.native)
         }
-        .padding(2)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.primary.opacity(0.07))
-        )
-        .padding(.horizontal, 18)
-        .padding(.top, 14)
-        .padding(.bottom, 2)
+        .padding(HakoTheme.Spacing.standard)
 #else
-        Picker(HakoCopy.key("Listener"), selection: $tab) {
-            Text(HakoCopy.key("Core")).tag(LANShareTab.core)
-            Text(HakoCopy.key("Native Share")).tag(LANShareTab.native)
+        if #available(iOS 17.0, *) {
+            touchListenerForm
+                .contentMargins(.top, HakoTheme.Spacing.row, for: .scrollContent)
+        } else {
+            touchListenerForm
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .accessibilityIdentifier("proxyShare.tab")
-        .padding(.horizontal, 18)
-        .padding(.top, 14)
-        .padding(.bottom, 2)
 #endif
     }
 
-#if os(macOS)
-    private func tabSegment(
-        _ target: LANShareTab,
-        _ key: String,
-         
-         
-        identifier: String
-    ) -> some View {
-        Button {
-            tab = target
-        } label: {
-            Text(HakoCopy.key(key))
-                .font(.callout.weight(tab == target ? .semibold : .regular))
-                .frame(maxWidth: .infinity, minHeight: 26)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background {
-            if tab == target {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color(nsColor: .controlColor))
-                    .shadow(color: .black.opacity(0.18), radius: 1, y: 1)
+#if !os(macOS)
+    private var touchListenerForm: some View {
+        HakoMacSettingsFormContainer {
+            Section {
+                Picker(HakoCopy.key("Listener"), selection: $tab) {
+                    Text(HakoCopy.key("Core")).tag(LANShareTab.core)
+                    Text(HakoCopy.key("Native Share")).tag(LANShareTab.native)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityIdentifier("proxyShare.tab")
+                .frame(minHeight: 44)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+            switch tab {
+            case .core: coreSections
+            case .native: nativeSections
             }
         }
-        .accessibilityIdentifier(identifier)
-        .accessibilityAddTraits(tab == target ? .isSelected : [])
     }
 #endif
+
+    @ViewBuilder
+    private var coreSections: some View {
+        coreSwitchSection
+         
+         
+         
+         
+        coreListenerSection(kernelShare.listener, sharing: kernelShare.isOn)
+        if model.terminalListener != nil {
+            terminalSection
+        }
+        coreExposureSection
+        listenerDeviationsSection
+    }
+
+    @ViewBuilder
+    private var nativeSections: some View {
+        actionSection
+        if model.status.enabled {
+            connectSection
+        }
+        serverSection
+        securitySection
+        if model.terminalListener != nil {
+            terminalSection
+        }
+    }
 
      
      
@@ -406,7 +397,7 @@ struct ProxyShareView: View {
                     .accessibilityIdentifier("proxyShare.error")
             }
         } footer: {
-            Text("This is the profile's allow-lan. Written in the profile, it is read as written; not written, turning this on writes an override. Takes effect the next time the tunnel starts.")
+            Text("Read from the profile's allow-lan and mixed-port. Changing either here overrides this profile only; clear the port to follow the profile again. Takes effect the next time the tunnel starts.")
         }
     }
 
@@ -453,66 +444,89 @@ struct ProxyShareView: View {
      
      
      
-    private func coreListenerSection(_ listener: ProfileListenerPorts) -> some View {
+    private func coreListenerSection(_ listener: ProfileListenerPorts?, sharing: Bool) -> some View {
         Section {
-            if let mixed = listener.mixedPort {
-                OverviewValueRow(title: "Port", value: .verbatim(String(mixed)))
-                    .accessibilityIdentifier("proxyShare.listener.port")
-                OverviewValueRow(title: "Protocols", value: .copy("HTTP + SOCKS5"))
-                    .accessibilityIdentifier("proxyShare.listener.protocols")
-            } else {
-                if let http = listener.httpPort {
-                    OverviewValueRow(title: "HTTP Port", value: .verbatim(String(http)))
-                        .accessibilityIdentifier("proxyShare.listener.port")
+             
+             
+             
+             
+            HakoFieldRow(
+                "Port",
+                hint: String(KernelLANShare.defaultPort),
+                text: $corePortText,
+                monospaced: true,
+                 
+                 
+                compactValue: true,
+                identifier: "proxyShare.core.port",
+                onEditingEnded: {
+                    let typed = corePortText
+                    Task {
+                        await model.setKernelSharePort(text: typed)
+                        corePortText = model.kernelSharePortText
+                    }
                 }
-                if let socks = listener.socksPort {
-                    OverviewValueRow(title: "SOCKS5 Port", value: .verbatim(String(socks)))
-                        .accessibilityIdentifier("proxyShare.listener.port")
-                }
-            }
-            OverviewValueRow(
-                title: "Authentication",
-                value: listener.credentials.map { .verbatim($0.username) } ?? .copy("Not set")
             )
-            .accessibilityIdentifier("proxyShare.listener.authentication")
-        } header: {
-            Text("Listener")
-        } footer: {
-            Text(hako: .copy(
-                listener.credentials == nil
-                    ? "The profile sets no authentication: anyone on this network can use this proxy."
-                    : "Credentials come from the profile's authentication."
-            ))
-        }
-    }
-
-     
-     
-    private func coreConnectSection(_ listener: ProfileListenerPorts) -> some View {
-        let ports = listener.mixedPort.map { [$0] }
-            ?? [listener.httpPort, listener.socksPort].compactMap { $0 }
-        return Section {
-            if reachableAddresses.isEmpty {
-                HakoStatusMessage(
-                    text: .copy("No usable Wi-Fi or Personal Hotspot address is available."),
-                    kind: .information
+            .keyboardType(.numberPad)
+            if let listener {
+                if listener.mixedPort != nil {
+                    OverviewValueRow(title: "Protocols", value: .copy("HTTP + SOCKS5"))
+                        .accessibilityIdentifier("proxyShare.listener.protocols")
+                } else {
+                    if let http = listener.httpPort {
+                        OverviewValueRow(title: "HTTP Port", value: .verbatim(String(http)))
+                            .accessibilityIdentifier("proxyShare.listener.port")
+                    }
+                    if let socks = listener.socksPort {
+                        OverviewValueRow(title: "SOCKS5 Port", value: .verbatim(String(socks)))
+                            .accessibilityIdentifier("proxyShare.listener.port")
+                    }
+                }
+                OverviewValueRow(
+                    title: "Authentication",
+                    value: listener.credentials.map { .verbatim($0.username) } ?? .copy("Not set")
                 )
-            } else {
-                ForEach(reachableAddresses, id: \.self) { address in
-                    ForEach(ports, id: \.self) { port in
-                        Text(ProxyShareEndpointFormatter.format(address: address, port: port))
-                            .font(HakoPlatformLayout.pageUsesSystemSettingsIdiom ? HakoMacSettingsType.mono : .subheadline.monospaced())
-                            .textSelection(.enabled)
-                             
-                             
-                            .id("core:\(address):\(port)")
+                .accessibilityIdentifier("proxyShare.listener.authentication")
+                 
+                 
+                 
+                if sharing {
+                    let ports = listener.mixedPort.map { [$0] }
+                        ?? [listener.httpPort, listener.socksPort].compactMap { $0 }
+                    if reachableAddresses.isEmpty {
+                        HakoStatusMessage(
+                            text: .copy("No usable Wi-Fi or Personal Hotspot address is available."),
+                            kind: .information
+                        )
+                    } else {
+                        ForEach(reachableAddresses, id: \.self) { address in
+                            ForEach(ports, id: \.self) { port in
+                                Text(ProxyShareEndpointFormatter.format(address: address, port: port))
+                                    .font(HakoPlatformLayout.pageUsesSystemSettingsIdiom ? HakoMacSettingsType.mono : .subheadline.monospaced())
+                                    .textSelection(.enabled)
+                                     
+                                     
+                                    .id("core:\(address):\(port)")
+                            }
+                        }
                     }
                 }
             }
         } header: {
-            Text("Connect From Another Device")
+            Text("Listener")
         } footer: {
-            Text("Point the other device at one address above, over HTTP or SOCKS5.")
+            if let listener {
+                VStack(alignment: .leading, spacing: HakoTheme.Spacing.tight) {
+                    Text(hako: .copy(
+                        listener.credentials == nil
+                            ? "The profile sets no authentication: anyone on this network can use this proxy."
+                            : "Credentials come from the profile's authentication."
+                    ))
+                    if sharing {
+                        Text("Point the other device at one address above, over HTTP or SOCKS5.")
+                    }
+                }
+            }
         }
     }
 

@@ -229,8 +229,12 @@ enum HakoProxyAccordionPlan {
  
  
  
-private struct ProxyIndexPreparationKey: Equatable {
+struct ProxyIndexPreparationKey: Equatable {
     let groups: [HakoProxyGroupSnapshot]
+     
+     
+     
+    let hiddenGroups: [HakoProxyGroupSnapshot]
     let latencyByName: [String: HakoProxyLatencyState]
     let isConnected: Bool
     let sort: HakoProxiesDisplayPreferences.Sort
@@ -246,6 +250,7 @@ private struct ProxyIndexPreparationKey: Equatable {
         orderingGroupNames: Set<String>
     ) {
         groups = proxies.groups
+        hiddenGroups = proxies.hiddenGroups
         latencyByName = proxies.latencyByName
         isConnected = proxies.isConnected
         self.sort = sort
@@ -311,6 +316,7 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
          
         let p = a.snapshot.proxies, q = b.snapshot.proxies
         let dataEqual = p.groups == q.groups
+            && p.hiddenGroups == q.hiddenGroups
             && p.searchableProxies == q.searchableProxies
             && p.providers == q.providers
             && p.ungrouped == q.ungrouped
@@ -656,6 +662,12 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
                  
                 HakoPerf.mark("proxies page disappears")
                 send(.cancelLatency)
+            }
+            .onChange(of: visibleGroupNames) { _ in
+                keepOneGroupOpen()
+            }
+            .onAppear {
+                keepOneGroupOpen()
             }
             .onChange(of: foldCommand) { _ in
                  
@@ -1081,6 +1093,9 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
 
     @ViewBuilder
     private var browserSections: some View {
+        if !failedProviders.isEmpty {
+            failedProvidersCard
+        }
         if !browsedGroups.isEmpty {
             groupsCard
         } else if snapshot.proxies.browsingSuppressedByDirectMode {
@@ -1173,6 +1188,54 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
      
     private var headerControlHeight: CGFloat { 32 }
 
+    private var failedProviders: [HakoProxyProviderSnapshot] {
+        snapshot.proxies.providers.filter { $0.loadFailure != nil }
+    }
+
+     
+     
+     
+     
+    private var failedProvidersCard: some View {
+        HakoCardSurface(fill: palette.card, separator: palette.separator) {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: HakoTheme.Spacing.compact) {
+                    ForEach(failedProviders, id: \.name) { provider in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: provider.name)
+                                .font(.subheadline.weight(.semibold))
+                            Text(verbatim: provider.loadFailure ?? "")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(.top, HakoTheme.Spacing.compact)
+            } label: {
+                Label {
+                     
+                    Text(hako: .format(
+                        failedProviders.count == 1
+                            ? "%@ source could not be read: %@"
+                            : "%@ sources could not be read: %@",
+                        [String(failedProviders.count), failedProviders.map(\.name).joined(separator: ", ")]
+                    ))
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                } icon: {
+                    icon(.exclamationmarkTriangle)
+                        .foregroundStyle(.orange)
+                }
+            }
+             
+             
+            .hakoRowDisclosure()
+            .padding(HakoTheme.Spacing.standard)
+        }
+        .accessibilityIdentifier("proxies.providers.failedSummary")
+    }
+
     private var providersTitle: HakoDisplayText {
          
          
@@ -1258,7 +1321,7 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
             detail: "group=\(group.name) members=\(group.members.count)"
         ) {
             group.members.contains {
-                snapshot.proxies.latency(for: $0.name) == .testing
+                snapshot.proxies.latency(for: $0.latencyKey) == .testing
             }
         }
         let selection = visibleSelection(in: group)
@@ -1269,13 +1332,14 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
             isTesting: isTesting,
             isConnected: snapshot.proxies.isConnected,
             currentSelection: selection,
+            latency: snapshot.proxies.displayedLatency(forGroup: group),
             showsUnpin: snapshot.proxies.offersUnpin(for: group)
                 && selection != nil,
             showsIconImages: preferences.groupIconImages,
             icon: icon,
             onToggle: { toggle(group) },
             onTestGroup: { send(.testGroup(name: group.name)) },
-            onUnpin: { send(.unpin(group: group.name)) }
+            onUnpin: { unpin(group) }
         )
         .equatable()
         .id("group.\(group.name)")
@@ -1431,11 +1495,36 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
             } else if let group = browsedGroups.first(where: {
                 $0.name == active
             }) {
+                let selection = visibleSelection(in: group)
                 HStack(spacing: 6) {
                     Text(group.type)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
-                    if let current = visibleSelection(in: group) {
+                     
+                     
+                     
+                     
+                     
+                     
+                    if snapshot.proxies.offersUnpin(for: group), selection != nil {
+                        Button("Unfix") {
+                            unpin(group)
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                        .accessibilityIdentifier("proxies.unfix.\(group.name)")
+                    }
+                    if group.isEmpty {
+                         
+                         
+                         
+                        Text(hako: .copy("· No nodes"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let current = selection {
                         HakoRegionalFlag.label("→ \(current)", pointSize: 12, relativeTo: .caption)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -1599,6 +1688,36 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
         in group: HakoProxyGroupSnapshot?
     ) -> some View {
         let _ = HakoPerf.count("proxies.card.make")
+         
+         
+         
+         
+         
+         
+         
+         
+        if snapshot.proxies.canEdit(member) {
+            plainMemberCard(member, in: group)
+                .contextMenu {
+                    Button {
+                        send(.editMember(name: member.name))
+                    } label: {
+                        Label {
+                            Text(HakoCopy.key("Edit Node"))
+                        } icon: {
+                            Image(systemName: HakoSymbol.pencil.rawValue)
+                        }
+                    }
+                }
+        } else {
+            plainMemberCard(member, in: group)
+        }
+    }
+
+    private func plainMemberCard(
+        _ member: HakoProxyMemberSnapshot,
+        in group: HakoProxyGroupSnapshot?
+    ) -> some View {
         HakoProxyMemberCard(
             member: member,
             detail: memberDetail(member),
@@ -1636,8 +1755,8 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
     ) -> HakoProxyLatencyState? {
         guard let pulse = latencyPulseSnapshot?() else { return nil }
         let name = member.isGroup
-            ? pulse.groupTerminals[member.name]
-            : member.name
+            ? pulse.groupTerminalKeys[member.name] ?? pulse.groupTerminals[member.name]
+            : member.latencyKey
         guard let name else { return nil }
         if let result = pulse.results[name] { return result }
         if pulse.isTesting, pulse.testing.contains(name) { return .testing }
@@ -1823,7 +1942,7 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
         let canOpen = !(provider.nodes ?? []).isEmpty
         let isOpen = expandedProvider == provider.name
         return HStack(spacing: HakoTheme.Spacing.row) {
-            HakoRegionalFlag.label(provider.name, pointSize: 17, relativeTo: .body)
+            HakoRegionalFlag.label(provider.title, pointSize: 17, relativeTo: .body)
                 .font(.body.weight(.semibold))
             if canOpen {
                 icon(.chevronDown)
@@ -1999,6 +2118,40 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
     }
 
      
+     
+     
+     
+    private var visibleGroupNames: [String] {
+        var names = snapshot.proxies.groups.map(\.name)
+        if !snapshot.proxies.ungrouped.isEmpty {
+            names.append(HakoProxyBrowsing.ungroupedKey)
+        }
+        return names
+    }
+
+     
+    private func keepOneGroupOpen() {
+        guard HakoPlatformLayout.proxiesKeepsOneGroupOpen else { return }
+        guard let name = HakoProxyBrowsing.groupToKeepOpen(
+            visible: visibleGroupNames,
+            expanded: expanded,
+             
+             
+             
+             
+             
+            lastOpened: lastExpandedGroup
+                ?? snapshot.proxies.initiallyExpandedGroup
+                ?? snapshot.proxies.rememberedOpenGroup,
+            isSearching: isSearching,
+            readerFoldedAll: snapshot.proxies.readerFoldedAll ?? false
+        ) else { return }
+        HakoPerf.emit("proxies keep-open group=\(name)")
+        expanded = [name]
+        send(.setGroupExpanded(name: name, isExpanded: true))
+        send(.setVisibleGroup(name: name))
+    }
+
     private var hasExpandedGroups: Bool {
         browsedGroups.contains { expanded.contains($0.name) }
             || expanded.contains(HakoProxyBrowsing.ungroupedKey)
@@ -2100,6 +2253,16 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
         }
     }
 
+     
+     
+     
+     
+     
+    private func unpin(_ group: HakoProxyGroupSnapshot) {
+        offlineSelections[group.name] = nil
+        send(.unpin(group: group.name))
+    }
+
     private func visibleSelection(
         in group: HakoProxyGroupSnapshot
     ) -> String? {
@@ -2114,14 +2277,54 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
     private func memberDetail(
         _ member: HakoProxyMemberSnapshot
     ) -> String {
-        if index.source == snapshot.proxies, let detail = index.detail(for: member) {
+         
+         
+         
+         
+         
+         
+         
+         
+        if !member.isGroup,
+           index.source == snapshot.proxies,
+           let detail = index.detail(for: member)
+        {
             return detail
         }
-        guard member.isGroup,
-              let route = memberResolvedRoute(member) else {
+        guard member.isGroup, let route = memberRouteForDisplay(member) else {
             return member.type
         }
         return "\(member.type) → \(route)"
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func memberRouteForDisplay(
+        _ member: HakoProxyMemberSnapshot
+    ) -> String? {
+         
+         
+         
+         
+         
+         
+         
+         
+        if snapshot.proxies.isConnected,
+           !snapshot.proxies.isEmptyGroup(member),
+           let terminal = latencyPulseSnapshot?().groupTerminals[member.name]
+        {
+            return terminal
+        }
+        return memberResolvedRoute(member)
     }
 
     private func memberResolvedRoute(
@@ -2194,7 +2397,25 @@ public struct HakoProxiesView<Icon: View>: View, Equatable {
     }
 }
 
-private struct HakoProxyMemberCard: View, Equatable {
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+private enum HakoLatencyRowAlignment: AlignmentID {
+    static func defaultValue(in context: ViewDimensions) -> CGFloat {
+        context[VerticalAlignment.center]
+    }
+}
+
+private extension VerticalAlignment {
+    static let hakoLatencyRow = VerticalAlignment(HakoLatencyRowAlignment.self)
+}
+
+struct HakoProxyMemberCard: View, Equatable {
      
      
      
@@ -2258,7 +2479,7 @@ private struct HakoProxyMemberCard: View, Equatable {
          
          
          
-        ZStack(alignment: .bottomTrailing) {
+        ZStack(alignment: Alignment(horizontal: .trailing, vertical: .hakoLatencyRow)) {
         Button(action: action) {
             content
                 .padding(.trailing, inspect == nil ? 0 : 24)
@@ -2296,8 +2517,8 @@ private struct HakoProxyMemberCard: View, Equatable {
         .accessibilityValue(isCurrent ? "Selected" : "")
         .accessibilityIdentifier("proxies.member.\(member.name)")
         inspectButton
+            .alignmentGuide(.hakoLatencyRow) { $0[VerticalAlignment.center] }
             .padding(.trailing, HakoTheme.Spacing.compact)
-            .padding(.bottom, HakoTheme.Spacing.compact)
         }
         .onReceive(
             pulse ?? Empty<HakoLatencyPulse, Never>().eraseToAnyPublisher()
@@ -2310,8 +2531,8 @@ private struct HakoProxyMemberCard: View, Equatable {
              
              
             let name = member.isGroup
-                ? batch.groupTerminals[member.name]
-                : member.name
+                ? batch.groupTerminalKeys[member.name] ?? batch.groupTerminals[member.name]
+                : member.latencyKey
             if let name {
                 if !batch.isTesting {
                      
@@ -2405,6 +2626,7 @@ private struct HakoProxyMemberCard: View, Equatable {
                 state: shownLatency,
                 failureCategory: failureCategory
             )
+                .alignmentGuide(.hakoLatencyRow) { $0[VerticalAlignment.center] }
         }
         .padding(HakoTheme.Spacing.row)
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -2429,6 +2651,7 @@ private struct HakoProxyMemberCard: View, Equatable {
                         failureCategory: failureCategory,
                         onTest: onTest
                     )
+                        .alignmentGuide(.hakoLatencyRow) { $0[VerticalAlignment.center] }
                 }
                 chainLine
             }
@@ -2464,6 +2687,7 @@ private struct HakoProxyMemberCard: View, Equatable {
                         failureCategory: failureCategory,
                         onTest: onTest
                     )
+                        .alignmentGuide(.hakoLatencyRow) { $0[VerticalAlignment.center] }
                 }
             }
         }
@@ -2488,6 +2712,7 @@ private struct HakoProxyMemberCard: View, Equatable {
                 failureCategory: failureCategory,
                 usesDot: true
             )
+                .alignmentGuide(.hakoLatencyRow) { $0[VerticalAlignment.center] }
         }
         .padding(.horizontal, HakoTheme.Spacing.compact)
         .padding(.vertical, 6)
@@ -2607,6 +2832,15 @@ private struct HakoProxyLatencyIndicator: View {
     }
 
     private func color(_ milliseconds: Int) -> Color {
+        HakoProxyLatencyPalette.color(milliseconds)
+    }
+}
+
+ 
+ 
+ 
+enum HakoProxyLatencyPalette {
+    static func color(_ milliseconds: Int) -> Color {
         if milliseconds < 800 { return .green }
         if milliseconds < 1_600 { return .yellow }
         return .orange
@@ -2647,6 +2881,8 @@ private struct HakoProxyGroupHeader<Icon: View>: View, Equatable {
     let isTesting: Bool
     let isConnected: Bool
     let currentSelection: String?
+     
+    let latency: HakoProxyLatencyState
     let showsUnpin: Bool
      
      
@@ -2664,6 +2900,7 @@ private struct HakoProxyGroupHeader<Icon: View>: View, Equatable {
             && a.isTesting == b.isTesting
             && a.isConnected == b.isConnected
             && a.currentSelection == b.currentSelection
+            && a.latency == b.latency
             && a.showsUnpin == b.showsUnpin
              
              
@@ -2845,7 +3082,11 @@ private struct HakoProxyGroupHeader<Icon: View>: View, Equatable {
                         .contentShape(Rectangle())
                         .accessibilityIdentifier("proxies.unfix.\(group.name)")
                     }
-                    if let current = currentSelection {
+                    if group.isEmpty {
+                        Text(hako: .copy("· No nodes"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let current = currentSelection {
                         Text("→")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
@@ -2854,6 +3095,13 @@ private struct HakoProxyGroupHeader<Icon: View>: View, Equatable {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                        if case .measured(let milliseconds) = latency {
+                            Text(hako: .verbatim("(\(milliseconds) ms)"))
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(HakoProxyLatencyPalette.color(milliseconds))
+                                .accessibilityLabel("\(milliseconds)ms")
+                        }
                     }
                     Spacer(minLength: 0)
                 }
@@ -3190,6 +3438,10 @@ public struct HakoLatencyPulse: Equatable, Sendable {
      
      
     public let groupTerminals: [String: String]
+     
+     
+     
+    public let groupTerminalKeys: [String: String]
     public let completed: Int
     public let total: Int
     public let isTesting: Bool
@@ -3198,6 +3450,7 @@ public struct HakoLatencyPulse: Equatable, Sendable {
         results: [String: HakoProxyLatencyState],
         testing: Set<String>,
         groupTerminals: [String: String] = [:],
+        groupTerminalKeys: [String: String] = [:],
         completed: Int,
         total: Int,
         isTesting: Bool
@@ -3205,6 +3458,7 @@ public struct HakoLatencyPulse: Equatable, Sendable {
         self.results = results
         self.testing = testing
         self.groupTerminals = groupTerminals
+        self.groupTerminalKeys = groupTerminalKeys
         self.completed = completed
         self.total = total
         self.isTesting = isTesting
@@ -3250,7 +3504,7 @@ struct ProxyDerivedIndex: Equatable {
     }
 
     private static func key(_ member: HakoProxyMemberSnapshot) -> String {
-        (member.isGroup ? "g:" : "p:") + member.name
+        (member.isGroup ? "g:" : "p:") + member.latencyKey
     }
 
     func latency(for member: HakoProxyMemberSnapshot) -> HakoProxyLatencyState? {
@@ -3307,6 +3561,7 @@ struct ProxyDerivedIndex: Equatable {
         _ rhs: HakoProxiesSnapshot
     ) -> Bool {
         lhs.groups == rhs.groups
+            && lhs.hiddenGroups == rhs.hiddenGroups
             && lhs.latencyByName == rhs.latencyByName
             && lhs.isConnected == rhs.isConnected
     }
@@ -3320,6 +3575,9 @@ struct ProxyDerivedIndex: Equatable {
             hasher.combine(group.name)
             for member in group.members {
                 hasher.combine(member.name)
+                 
+                 
+                hasher.combine(member.latencyKey)
             }
         }
         return hasher.finalize()
@@ -3361,7 +3619,11 @@ struct ProxyDerivedIndex: Equatable {
                 if latencyByKey[memberKey] == nil {
                     latencyByKey[memberKey] = proxies.displayedLatency(for: member)
                 }
-                if detailByKey[memberKey] == nil {
+                 
+                 
+                 
+                 
+                if !member.isGroup, detailByKey[memberKey] == nil {
                     detailByKey[memberKey] = detail(of: member, in: proxies)
                 }
             }

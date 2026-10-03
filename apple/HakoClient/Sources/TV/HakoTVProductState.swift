@@ -39,6 +39,7 @@ struct HakoTVProductState {
      
      
     var issue: String?
+    var vpnAuthorization: HakoVPNAuthorizationState?
      
      
     var pipelinePhase: HakoTVConfigPipeline.Phase?
@@ -72,10 +73,20 @@ struct HakoTVProductState {
      
     var proxyGroups: [HakoProxyGroupSnapshot]
      
+     
+     
+     
+     
+    var hiddenProxyGroups: [HakoProxyGroupSnapshot] = []
+     
     var latency: [String: HakoProxyLatencyState]
      
      
     var failureReasons: [String: String] = [:]
+     
+     
+     
+    var easyTierNodeNames: Set<String> = []
      
      
     var rules: [HakoRuleLineSnapshot]
@@ -109,7 +120,7 @@ struct HakoTVProductState {
      
      
     var lastProblem: Problem? = Problem(
-        sentence: String(localized: "The subscription could not be fetched: the request timed out."),
+        sentence: String(localized: "The profile URL could not be fetched: the request timed out."),
         at: Date().addingTimeInterval(-22 * 60)
     )
 
@@ -151,6 +162,7 @@ struct HakoTVProductState {
         state.sessionBytes = 0
         state.connectionCount = 0
         state.proxyGroups = []
+        state.hiddenProxyGroups = []
         state.latency = [:]
         state.rules = []
         state.connections = []
@@ -201,6 +213,24 @@ struct HakoTVProductState {
             runtimeSelection: member,
             resolvedRuntimeRoute: group.resolvedRuntimeRoute,
             icon: group.icon
+        )
+    }
+
+     
+     
+     
+    mutating func unpin(group groupName: String) {
+        guard let index = proxyGroups.firstIndex(where: { $0.name == groupName }) else { return }
+        let group = proxyGroups[index]
+        proxyGroups[index] = HakoProxyGroupSnapshot(
+            name: group.name,
+            type: group.type,
+            members: group.members,
+            configuredSelection: nil,
+            runtimeSelection: group.runtimeSelection,
+            resolvedRuntimeRoute: group.resolvedRuntimeRoute,
+            icon: group.icon,
+            emptyFallback: group.emptyFallback
         )
     }
 

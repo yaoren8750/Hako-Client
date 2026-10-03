@@ -44,13 +44,27 @@ struct OnDemandConfigView: View {
                 Text("If YES, the VPN connection will be always on. The default is NO")
             }
 
+             
+             
+             
+             
+             
+             
+             
+             
+             
             Section {
                 Toggle("On Demand", isOn: setting(\.enabled))
                     .accessibilityIdentifier("onDemand.enabled")
+                    .disabled(draft.alwaysOn)
             } header: {
                 Text("On Demand")
             } footer: {
-                Text("Toggles VPN On Demand.")
+                if draft.alwaysOn {
+                    Text("Always On is on, so On Demand and its rules do not apply.")
+                } else {
+                    Text("Toggles VPN On Demand.")
+                }
             }
 
             Section {
@@ -90,6 +104,8 @@ struct OnDemandConfigView: View {
                         }
                         .accessibilityElement(children: .combine)
                     }
+                    .deleteDisabled(draft.alwaysOn)
+                    .moveDisabled(draft.alwaysOn)
                      
                      
                      
@@ -129,6 +145,7 @@ struct OnDemandConfigView: View {
                     .accessibilityIdentifier("onDemand.rules.add")
                 }
             }
+            .disabled(draft.alwaysOn)
 
             if !error.isEmpty {
                 Section {
@@ -151,6 +168,7 @@ struct OnDemandConfigView: View {
                     Label("Add Rule", systemImage: HakoSymbol.plus.name)
                 }
                 .accessibilityIdentifier("onDemand.addRule")
+                .disabled(draft.alwaysOn)
             }
         }
     }
@@ -402,8 +420,7 @@ private struct OnDemandRuleEditor: View {
         .hakoRegistersDeparture(
             isDirty: draft != openedWith,
             save: { completion in
-                save()
-                completion(true)
+                completion(commit())
             },
             discard: { draft = openedWith }
         )
@@ -450,17 +467,26 @@ private struct OnDemandRuleEditor: View {
         .hakoCapturesDismiss(dismiss)
     }
 
-    private func save() {
+     
+     
+     
+     
+     
+    private func save() { if commit() { closePage() } }
+
+    @discardableResult
+    private func commit() -> Bool {
         do {
             _ = try OnDemandSettings.rules(configuration: OnDemandConfiguration(
                 enabled: true,
                 rules: [draft]
             ))
             onSave(draft.normalized())
-            closePage()
+            return true
         } catch {
             self.error = error.localizedDescription
         }
+        return false
     }
 
      
@@ -564,8 +590,7 @@ private struct OnDemandEvaluateRuleEditor: View {
         .hakoRegistersDeparture(
             isDirty: draft != openedWith,
             save: { completion in
-                save()
-                completion(true)
+                completion(commit())
             },
             discard: { draft = openedWith }
         )
@@ -595,7 +620,15 @@ private struct OnDemandEvaluateRuleEditor: View {
         .hakoCapturesDismiss(dismiss)
     }
 
-    private func save() {
+     
+     
+     
+     
+     
+    private func save() { if commit() { closePage() } }
+
+    @discardableResult
+    private func commit() -> Bool {
         let outer = OnDemandRuleSpec(action: .evaluate, connectionRules: [draft])
         do {
             _ = try OnDemandSettings.rules(configuration: OnDemandConfiguration(
@@ -603,10 +636,11 @@ private struct OnDemandEvaluateRuleEditor: View {
                 rules: [outer]
             ))
             onSave(draft.normalized())
-            closePage()
+            return true
         } catch {
             self.error = error.localizedDescription
         }
+        return false
     }
 
      

@@ -18,10 +18,23 @@ import NetworkExtension
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 struct VPNTunnelSettings: Equatable {
     var enforceRoutes = false
     var includeAllNetworks = false
-    var includeLocalNetworks = true
+     
+    var includeLocalNetworks = false
     var includeAPNs = false
      
      
@@ -31,6 +44,10 @@ struct VPNTunnelSettings: Equatable {
      
      
     var homeKitCompatibility = false
+     
+     
+     
+    var excludeAPNsRoute = false
 
     enum Key {
         static let enforceRoutes = "vpn.tunnel.enforceRoutes"
@@ -39,6 +56,7 @@ struct VPNTunnelSettings: Equatable {
         static let includeAPNs = "vpn.tunnel.includeAPNs"
         static let hideVPNIcon = "vpn.tunnel.hideVPNIcon"
         static let homeKitCompatibility = "vpn.tunnel.homeKitCompatibility"
+        static let excludeAPNsRoute = "vpn.tunnel.excludeAPNsRoute"
     }
 
     static func load(from defaults: UserDefaults) -> Self {
@@ -48,11 +66,13 @@ struct VPNTunnelSettings: Equatable {
              
              
              
+             
             includeLocalNetworks: defaults.object(forKey: Key.includeLocalNetworks)
-                as? Bool ?? true,
+                as? Bool ?? VPNTunnelSettings().includeLocalNetworks,
             includeAPNs: defaults.bool(forKey: Key.includeAPNs),
             hideVPNIcon: defaults.bool(forKey: Key.hideVPNIcon),
-            homeKitCompatibility: defaults.bool(forKey: Key.homeKitCompatibility)
+            homeKitCompatibility: defaults.bool(forKey: Key.homeKitCompatibility),
+            excludeAPNsRoute: defaults.bool(forKey: Key.excludeAPNsRoute)
         )
     }
 
@@ -65,9 +85,8 @@ struct VPNTunnelSettings: Equatable {
      
      
      
-     
-    func localNetworksSwitchIsEnabled(configurationStrictRoute: Bool) -> Bool {
-        includeAllNetworks || enforceRoutes || configurationStrictRoute
+    var localNetworksSwitchIsEnabled: Bool {
+        includeAllNetworks || enforceRoutes
     }
 
     func save(to defaults: UserDefaults) {
@@ -77,9 +96,11 @@ struct VPNTunnelSettings: Equatable {
         defaults.set(includeAPNs, forKey: Key.includeAPNs)
         defaults.set(hideVPNIcon, forKey: Key.hideVPNIcon)
         defaults.set(homeKitCompatibility, forKey: Key.homeKitCompatibility)
+        defaults.set(excludeAPNsRoute, forKey: Key.excludeAPNsRoute)
     }
 }
 
+ 
  
  
  
@@ -94,12 +115,11 @@ struct VPNRoutingPolicy: Equatable {
 
     init(
         tunnel: VPNTunnelSettings = VPNTunnelSettings(),
-        configurationStrictRoute: Bool = false,
         preserveDevelopmentDeviceCommunication: Bool = Self.defaultDevelopmentDeviceCommunication
     ) {
         includeAllNetworks = tunnel.includeAllNetworks
         excludeLocalNetworks = !tunnel.includeLocalNetworks
-        enforceRoutes = tunnel.enforceRoutes || configurationStrictRoute
+        enforceRoutes = tunnel.enforceRoutes
          
         excludeCellularServices = true
         excludeAPNs = !tunnel.includeAPNs

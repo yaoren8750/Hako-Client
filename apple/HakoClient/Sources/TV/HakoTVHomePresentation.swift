@@ -35,12 +35,17 @@ struct HakoTVHomePresentation: Equatable {
      
      
     let cancels: Bool
+     
+     
+     
+    let reinstallsVPNProfile: Bool
 
-    init(buttonTitle: String, statusLine: String, tone: Tone, cancels: Bool = false) {
+    init(buttonTitle: String, statusLine: String, tone: Tone, cancels: Bool = false, reinstallsVPNProfile: Bool = false) {
         self.buttonTitle = buttonTitle
         self.statusLine = statusLine
         self.tone = tone
         self.cancels = cancels
+        self.reinstallsVPNProfile = reinstallsVPNProfile
     }
 
      
@@ -69,6 +74,10 @@ struct HakoTVHomePresentation: Equatable {
             activeProfileName: state.profileName.isEmpty ? "Profile" : state.profileName,
             vpnStatus: status,
             errorMessage: state.issue ?? "",
+            vpnAuthorization: state.vpnAuthorization,
+             
+             
+            errorIsProviderNotLaunched: state.issue == HakoTVTunnelController.providerNotLaunchedMessage,
             mode: state.outboundMode.kernelToken
         )
     }
@@ -89,6 +98,13 @@ struct HakoTVHomePresentation: Equatable {
                 tone: .transitional,
                 cancels: true
             )
+        }
+        if let authorization = state.vpnAuthorization, state.issue == nil, !state.isConnected {
+            let waiting = authorization == .waiting
+            return .init(buttonTitle: waiting ? "STARTING".localizedForTelevision : "Retry".localizedForTelevision,
+                         statusLine: waiting ? String(localized: "Allow VPN setup to connect.")
+                            : String(localized: "Select Retry, then allow VPN setup."),
+                         tone: waiting ? .transitional : .idle, cancels: waiting)
         }
         let presentation = HakoHomeConnectionPresenter.presentation(for: facts(for: state))
         switch presentation.phase {
@@ -119,10 +135,15 @@ struct HakoTVHomePresentation: Equatable {
                 cancels: presentation.primaryAction == .cancel
             )
         case .recoverableError:
+             
+             
+             
+            let reinstalls = presentation.issue?.kind == .providerNotLaunched
             return HakoTVHomePresentation(
-                buttonTitle: word(presentation),
+                buttonTitle: reinstalls ? String(localized: "Reinstall VPN Profile") : word(presentation),
                 statusLine: presentation.issue?.message ?? presentation.subtitle.rawValue.localizedForTelevision,
-                tone: .failed
+                tone: .failed,
+                reinstallsVPNProfile: reinstalls
             )
         default:
             return HakoTVHomePresentation(

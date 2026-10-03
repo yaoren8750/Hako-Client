@@ -146,6 +146,7 @@ struct GoldenFlowHomeAdapter: View {
      
     @State private var presentedHomeSnapshot: AppleClientSnapshot?
     @State private var configTally: ProfileConfigTally?
+    @State private var tallyGeneration: UInt64 = 0
      
      
      
@@ -262,6 +263,10 @@ struct GoldenFlowHomeAdapter: View {
         .onChange(of: command.isConnected) { _ in
             recomputeTally()
         }
+        .onChange(of: profiles.savedConfigurationGeneration) { _ in
+            recomputeTally()
+            if !command.isConnected { Task { await nodes.refresh() } }
+        }
         .onChange(of: editorDestination?.id) { destination in
             if destination == nil {
                 presentedHomeSnapshot = nil
@@ -348,7 +353,7 @@ struct GoldenFlowHomeAdapter: View {
             if let presentation = runtimeConfigurationPresentation,
                presentation.profileID == profile.id {
                 ProfileFinalConfigurationView(
-                    title: "Final Configuration",
+                    title: "Runtime Configuration",
                     snapshot: presentation.snapshot,
                     sourceYAML: presentation.sourceYAML,
                     comparisonYAML: presentation.comparisonYAML,
@@ -370,12 +375,15 @@ struct GoldenFlowHomeAdapter: View {
                                 .load(coreHome: coreHome)
                                 .blockedRuleProviders
                         }
-                        : nil
+                        : nil,
+                     
+                     
+                    textFirst: true
                 )
                 .hakoModalPresentation(.page)
             } else {
                 HomePreparationPlaceholder(
-                    title: "Final Configuration",
+                    title: "Runtime Configuration",
                     accessibilityIdentifier: "final.preparing"
                 )
                 .task(id: runtimeConfigurationPreparationGeneration) {
@@ -528,70 +536,6 @@ struct GoldenFlowHomeAdapter: View {
         _ destination: HomeProfileEditorDestination
     ) -> some View {
         switch destination {
-        case .customNodes(let profile):
-            CustomNodesView(
-                profile: profile,
-                sourceYAML: profiles.uiProjectedYAML(for: profile),
-                loadDraft: {
-                    try profiles.providerDefinitionsDraft(for: profile)
-                },
-                 
-                 
-                 
-                prepareDraft: nil,
-                saveDraft: {
-                    try profiles.updateProviderDefinitions($0)
-                },
-                savePayload: {
-                    try profiles.updateCustomNodePayload($0, for: profile.id)
-                },
-                applyEdits: {
-                    profiles.applyProfileNow(profile.id)
-                },
-                isApplying: profiles.isActivating,
-                renameNode: { try profiles.renameProxyNode(profileID: profile.id, from: $0, to: $1) },
-            )
-        case .proxySources(let profile):
-            ProfileProviderDefinitionsView(
-                profile: profile,
-                kind: .proxy,
-                load: {
-                    try await profiles.providerDefinitionsDraftAsync(for: profile)
-                },
-                save: {
-                    try profiles.updateProviderDefinitions($0)
-                }
-            )
-        case .ruleSets(let profile):
-            ProfileProviderDefinitionsView(
-                profile: profile,
-                kind: .rule,
-                load: {
-                    try await profiles.providerDefinitionsDraftAsync(for: profile)
-                },
-                save: {
-                    try profiles.updateProviderDefinitions($0)
-                }
-            )
-        case .network(let profile):
-            ProfileNetworkSettingsView(
-                profile: profile,
-                 
-                 
-                sourceYAML: profiles.baseYAML(for: profile),
-                udpFallbackGuardInput: { [profiles] in
-                    await profiles.udpFallbackGuardInput(for: profile)
-                }
-            ) { draft in
-                try profiles.updateNetwork(draft)
-            }
-        case .rules(let profile):
-            ProfileRulesAdapter(
-                profile: profile,
-                sourceYAML: profiles.uiProjectedYAML(for: profile)
-            ) { draft in
-                try profiles.updateRules(draft)
-            }
         case .rulesOverview(let profile):
             RulesOverviewHost(
                 command: command,
@@ -627,7 +571,19 @@ struct GoldenFlowHomeAdapter: View {
                          
                          
                          
-                        initiallyExpandedGroup: pendingProxiesGroup
+                        initiallyExpandedGroup: HomeProxiesEntryPolicy.groupToOpen(
+                            pending: pendingProxiesGroup,
+                            lastOpened: nodes.currentGroupName,
+                            groups: HomeProxiesEntryPolicy.candidates(
+                                preparedProxiesPresentation.sourceModel.groups,
+                                mode: ProxyBrowsingVisibility.Mode(coreValue: command.mode),
+                                name: \.name,
+                                isHidden: \.hidden
+                            ),
+                             
+                             
+                            readerFoldedAll: nodes.readerFoldedAllGroups
+                        )
                     )
                 } else {
                     HomePreparationPlaceholder(
@@ -651,66 +607,6 @@ struct GoldenFlowHomeAdapter: View {
                     generation: proxiesPreparationGeneration
                 )
             }
-        case .proxyChains(let profile):
-            ProfileProxyChainsView(
-                profile: profile,
-                rawYAML: profiles.runtimeSourceYAML(for: profile),
-                save: {
-                    try profiles.updateProxyChains($0)
-                },
-                 
-                 
-                 
-                 
-                measure: command.isConnected
-                    ? { name in
-                        let outcome = await command.urlTestQuietly(name: name)
-                        return outcome.succeeded ? outcome.delay : 0
-                    }
-                    : nil,
-                savePayloadDialers: { edits in
-                    guard !edits.isEmpty else {
-                        return
-                    }
-                    guard let latest = profiles.profiles.first(
-                        where: { $0.id == profile.id }
-                    ) else {
-                        throw PipelineError.sourceUnavailable(
-                            "the profile is no longer available"
-                        )
-                    }
-                    var working =
-                        try profiles.providerDefinitionsDraft(
-                            for: latest
-                        )
-                    for edit in edits {
-                        try working.setPayloadDialer(
-                            provider: edit.provider,
-                            node: edit.node,
-                            dialerProxy: edit.dialerProxy
-                        )
-                    }
-                    try profiles.updateProviderDefinitions(working)
-                },
-                openCustomNodes: {
-                    editorDestination = .customNodes(profile)
-                }
-            )
-        case .advanced(let profile):
-            ProfileAdvancedOverridesView(
-                profile: profile,
-                sourceYAML: profiles.sourceYAML(for: profile),
-                save: {
-                    try profiles.updateAdvancedOverrides($0)
-                }
-            )
-        case .additionalFields(let profile):
-            ProfileAdditionalFieldsView(
-                profile: profile,
-                save: {
-                    try profiles.updateAdvancedOverrides($0)
-                }
-            )
         }
     }
 
@@ -745,7 +641,9 @@ struct GoldenFlowHomeAdapter: View {
                 : group.resolvedNow
         return (
             route.isEmpty ? nil : route,
-            nodes.delays[route]
+             
+             
+            nodes.routeDelay(from: group.name)
         )
     }
 
@@ -1282,11 +1180,14 @@ struct GoldenFlowHomeAdapter: View {
     private var presentation: HomeConnectionPresentation {
         HomeConnectionPresenter.presentation(
             for: HomeConnectionFacts(
-                activeProfileName: currentProfile?.label,
+                activeProfileName: currentProfile.map { ProfileRowPresentation.label(for: $0, locale: .current) },
                 vpnStatus: vpn.status,
                 errorMessage: connectionErrorMessage,
+                vpnAuthorization: vpn.systemVPNAuthorization,
                 errorIsStartupStopped: vpn.reportableLastError.isEmpty
                     && startupExplanation != nil,
+                errorIsProviderNotLaunched: VPNDisconnectErrorPresentation
+                    .isProviderNotLaunched(vpn.reportableLastError),
                 allowsSystemVPNProfileReset:
                     vpn.systemVPNProfileResetAvailable,
                 isSwitchingProxy: nodes.isSwitchingProxy,
@@ -1328,14 +1229,6 @@ struct GoldenFlowHomeAdapter: View {
             rulesCardTargets
         }
         let timedEgress = HakoPerf.measure("home.s.egress") { egressSnapshot }
-        let timedAdjustments = HakoPerf.measure("home.s.adjustments") {
-            HomeAdjustmentModule.allCases.map {
-                HakoHomeAdjustmentSnapshot(
-                    module: $0,
-                    summary: adjustmentSummary($0)
-                )
-            }
-        }
         let timedTally = HakoPerf.measure("home.s.tally") { configTally }
         return AppleClientSnapshot(
             revision: UInt64(truncatingIfNeeded: profileRefreshToken),
@@ -1346,7 +1239,9 @@ struct GoldenFlowHomeAdapter: View {
                 }
                 return AppleClientProfileSnapshot(
                     id: identifier,
-                    label: $0.label
+                     
+                     
+                    label: ProfileRowPresentation.label(for: $0, locale: .current)
                 )
             },
             connection: AppleClientConnectionSnapshot(
@@ -1380,18 +1275,19 @@ struct GoldenFlowHomeAdapter: View {
                 proxyCount: timedTally?.proxies ?? 0,
                 ruleCount: timedTally?.rules ?? 0,
                 connection: timedPresentation,
-                initialSection:
-                    false
-                        ? .adjust
-                        : .common,
+                initialSection: .common,
                 favoriteCards: favoriteCards,
                 trafficScope:
                     trafficOnlyProxy ? .proxiedOnly : .allTraffic,
-                proxies: HakoHomeDomainSnapshot(
-                    count: timedProxyCount,
-                    countUnit: "proxies",
-                    breakdown: timedProxyBreakdown,
-                    names: timedTally?.groupNames ?? []
+                proxies: HomeProxiesCardPolicy.domainSnapshot(
+                    mode: configuredMode,
+                    standard: HakoHomeDomainSnapshot(
+                        count: timedProxyCount,
+                        countUnit: "proxies",
+                        breakdown: timedProxyBreakdown,
+                        names: timedTally?.groupNames ?? []
+                    ),
+                    globalNode: globalGroupNode
                 ),
                 rules: HakoHomeDomainSnapshot(
                     count: timedTally?.rules,
@@ -1401,9 +1297,14 @@ struct GoldenFlowHomeAdapter: View {
                 ),
                 egress: timedEgress,
                 lanAddress: lanAddress,
-                adjustments: timedAdjustments,
                 isProfileActionInFlight:
-                    profiles.isActivationInFlight
+                    profiles.isActivationInFlight,
+                 
+                 
+                selectedProfileIsSystemFallback: ProfileCenterPolicy.selectedProfileIsSystemFallback(
+                    selectedID: timedProfile?.id,
+                    profiles: profiles.profiles
+                )
             ),
             capabilities: AppleClientCapabilities([
                 .home: .available,
@@ -1492,6 +1393,14 @@ struct GoldenFlowHomeAdapter: View {
             performPrimaryAction(action)
         case .showConnectionIssue:
             presentedConnectionIssue = presentation.issue
+        case .resetVPNProfile:
+             
+             
+             
+             
+             
+             
+            Task { @MainActor in _ = await vpn.resetSystemVPNProfile() }
          
          
          
@@ -1507,8 +1416,6 @@ struct GoldenFlowHomeAdapter: View {
             } else {
                 presentRulesOverview()
             }
-        case .openAdjustment(let action):
-            presentEditor(for: action)
         case .openRuntimeConfiguration:
             presentRuntimeConfiguration()
         case .setCards(let cards):
@@ -1546,22 +1453,15 @@ struct GoldenFlowHomeAdapter: View {
               requestedGeneration == runtimeConfigurationPreparationGeneration
         else { return }
         let profileID = profile.id
-        let includesBlockedRuleSets = profiles.activeProfileID == profileID
+         
+         
+         
+         
         let sourceYAML = profiles.capturedSourceText(for: profile)
-        let comparisonYAML = profiles.sourceYAML(for: profile)
-        let baseYAML = comparisonYAML.flatMap {
-            RunningCoreDeviations.handedToCore(
-                profile: profile,
-                sidecarYAML: $0
-            )
-        }
         let effectiveYAML = profiles.previewText(for: profile)
         let began = DispatchTime.now().uptimeNanoseconds
         let snapshot = await Task.detached(priority: .userInitiated) {
-            ProfileFinalConfigurationSnapshot.make(
-                sourceYAML: sourceYAML,
-                effectiveYAML: effectiveYAML
-            )
+            ProfileFinalConfigurationSnapshot.textOnly(sourceYAML: sourceYAML, effectiveYAML: effectiveYAML)
         }.value
         guard !Task.isCancelled,
               requestedGeneration == runtimeConfigurationPreparationGeneration,
@@ -1571,9 +1471,9 @@ struct GoldenFlowHomeAdapter: View {
             profileID: profileID,
             snapshot: snapshot,
             sourceYAML: sourceYAML,
-            comparisonYAML: comparisonYAML,
-            baseYAML: baseYAML,
-            includesBlockedRuleSets: includesBlockedRuleSets
+            comparisonYAML: nil,
+            baseYAML: nil,
+            includesBlockedRuleSets: false
         )
         HakoPerf.span(
             "final.prepare",
@@ -1607,14 +1507,10 @@ struct GoldenFlowHomeAdapter: View {
          
          
          
-         
-         
-         
-        let fromDisk = subscriptionNodeTally
         let fromRuntime = nodes.runtimeProviderCatalog.proxyProviders.values
             .filter { !$0.isKernelInternal }
             .reduce(0) { $0 + $1.proxies.count }
-        let subscription = fromDisk ?? fromRuntime
+        let subscription = command.isConnected ? fromRuntime : (nodes.cachedProviderNodeCount ?? 0)
         guard subscription > 0 else { return inline }
         return (inline ?? 0) + subscription
     }
@@ -1641,6 +1537,16 @@ struct GoldenFlowHomeAdapter: View {
             .compactMap(\.count)
             .reduce(0, +)
         return total > 0 ? total : nil
+    }
+
+     
+     
+    private var globalGroupNode: String? {
+        let name = ProxyBrowsingVisibility.kernelGlobalGroupName
+        if let running = nodes.groups.first(where: { $0.name == name })?.now, !running.isEmpty {
+            return running
+        }
+        return currentProfile?.selectedMap[name]
     }
 
     private var proxiesCardBreakdown: String? {
@@ -1925,6 +1831,7 @@ struct GoldenFlowHomeAdapter: View {
         guard ModeIntentClock.isCurrent(observedIntent) else { return }
         switch GlobalModeConfirmation.verdict(
             groupCount: nodes.groups.count,
+            hasGlobalGroup: nodes.groups.contains { $0.name == GlobalProxySelectionPolicy.groupName },
             selectionConfirmed: confirmed
         ) {
         case .confirmed:
@@ -1948,111 +1855,6 @@ struct GoldenFlowHomeAdapter: View {
         }
         configuredMode = .rule
         await command.setMode(Profile.OutboundMode.rule.rawValue)
-    }
-
-    private func presentEditor(
-        for action: HakoHomeAdjustmentAction
-    ) {
-        HakoPushClock.tap()
-        guard let currentProfile else {
-            return
-        }
-        switch action {
-        case .customNodes:
-            editorDestination = .customNodes(currentProfile)
-        case .proxyChains:
-            editorDestination = .proxyChains(currentProfile)
-        case .routingRules:
-            editorDestination = .rules(currentProfile)
-        case .connection:
-            editorDestination = .network(currentProfile)
-        case .proxySources:
-            editorDestination = .proxySources(currentProfile)
-        case .ruleSets:
-            editorDestination = .ruleSets(currentProfile)
-        case .advancedOverrides:
-            editorDestination = .advanced(currentProfile)
-        case .rawFields:
-            editorDestination = .additionalFields(currentProfile)
-        }
-    }
-
-    private func adjustmentSummary(
-        _ module: HomeAdjustmentModule
-    ) -> String {
-        guard let profile = currentProfile else {
-            return module.subtitle
-        }
-        switch module {
-        case .nodes:
-            let chains = profile.proxyChain?.assignments.count ?? 0
-            return chains == 0
-                ? module.subtitle
-                : HakoCopy.format("%d proxy chains", locale: locale, chains)
-        case .rules:
-            let count = profile.override.appendRules.count
-            return count == 0
-                ? module.subtitle
-                : HakoCopy.format("%d personal rules", locale: locale, count)
-        case .network:
-            let count =
-                ProfileNetworkDraft(profile: profile)
-                    .customizedProfileFieldCount
-            return count == 0
-                ? module.subtitle
-                : HakoCopy.format(
-                    "%d profile network settings",
-                    locale: locale,
-                    count
-                )
-        case .resources:
-             
-             
-             
-            guard let counts = resourceCounts, counts.hasResources else {
-                return module.subtitle
-            }
-            if counts.providers > 0 {
-                return HakoCopy.format(
-                    "%d proxy sources · %d rule sets",
-                    locale: locale,
-                    counts.proxyProviders,
-                    counts.ruleProviders
-                )
-            }
-            return HakoCopy.format(
-                "%d supporting files",
-                locale: locale,
-                counts.supportingFiles
-            )
-        case .advancedOverrides:
-            switch profile.overwriteMode ?? .standard {
-            case .standard:
-                let count =
-                    ProfileAdvancedOverridesDraft(profile: profile)
-                        .rawPatchFieldCount
-                return count == 0
-                    ? HakoCopy.string("Visual settings only", locale: locale)
-                    : HakoCopy.format(
-                        "%d additional fields",
-                        locale: locale,
-                        count
-                    )
-            case .script:
-                return profile.selectedScriptID == nil
-                    ? HakoCopy.string("Choose a local script", locale: locale)
-                    : HakoCopy.string("Local script selected", locale: locale)
-            case .custom:
-                let custom =
-                    profile.customOverwrite ?? CustomOverwriteSpec()
-                return HakoCopy.format(
-                    "%d custom groups · %d rules",
-                    locale: locale,
-                    custom.proxyGroups.count,
-                    custom.rules.count
-                )
-            }
-        }
     }
 
     private func performPrimaryAction(
@@ -2109,14 +1911,24 @@ struct GoldenFlowHomeAdapter: View {
         for profile: Profile,
         generation requestedGeneration: UInt64
     ) async {
-        let sourceYAML = profiles.uiProjectedYAML(for: profile)
+        let sourceYAML = await profiles.loadPresentedProxiesYAML(for: profile)
         let selectedMap = profile.selectedMap
+        let profileID = profile.id
+         
+         
+         
+        let isActive = profiles.activeProfileID == profileID
+         
+         
+         
+        let asksKernel = !command.isConnected && !command.tunnelIsUp
         let preparedModel = await Task.detached(
             priority: .userInitiated
         ) {
             var providerNodes:
                 [String: [ProxiesOverviewModel.Proxy]] = [:]
-            if let container = HakoAppIdentifiers.appGroupContainer,
+            if isActive,
+               let container = HakoAppIdentifiers.appGroupContainer,
                let store = try? ConfigResourceStore(
                    containerURL: container
                ),
@@ -2127,11 +1939,15 @@ struct GoldenFlowHomeAdapter: View {
                     providersDir: directory
                 )
             }
-            return ProxiesOverviewModel.make(
+             
+             
+             
+            let projected = ProxiesOverviewModel.make(
                 sourceYAML: sourceYAML,
                 selectedMap: selectedMap,
                 providerNodes: providerNodes
             )
+            return asksKernel ? projected.resolvedWithKernelCatalog(profileID: profileID) : projected
         }.value
         guard !Task.isCancelled,
               requestedGeneration == proxiesPreparationGeneration,
@@ -2154,6 +1970,9 @@ struct GoldenFlowHomeAdapter: View {
     }
 
     private func recomputeTally() {
+        tallyGeneration &+= 1
+        let generation = tallyGeneration
+        let tunnelRunning = command.isConnected
          
          
          
@@ -2181,7 +2000,7 @@ struct GoldenFlowHomeAdapter: View {
          
          
         let cacheKey = currentProfile.map {
-            HomeTallyCache.Key(profileID: $0.id, refreshToken: profileRefreshToken)
+            HomeTallyCache.Key(profileID: $0.id, refreshToken: profileRefreshToken &+ Int(truncatingIfNeeded: profiles.savedConfigurationGeneration))
         }
         if let cacheKey, let cached = HomeTallyCache.shared.entry(for: cacheKey) {
             configTally = cached.tally
@@ -2208,9 +2027,14 @@ struct GoldenFlowHomeAdapter: View {
                     )
                 }
             }
-            let (effective, tunnelRunning): (String?, Bool) = await MainActor.run {
-                (projectionProfile.flatMap { profiles.effectiveYAML(for: $0) }, command.isConnected)
-            }
+            let effective: String?
+            if tunnelRunning {
+                effective = await MainActor.run { projectionProfile.flatMap { profiles.effectiveYAML(for: $0) } }
+            } else if let source = resourceYAML, let profile = projectionProfile {
+                 
+                 
+                effective = (try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile)) ?? source
+            } else { effective = nil }
             let tally = ProfileConfigTally.make(sourceYAML: effective, tunnelRunning: tunnelRunning)
             let overview = RulesOverviewModel.make(sourceYAML: effective)
             let subscription = Self.readSubscriptionNodeTally(store: store)
@@ -2219,6 +2043,8 @@ struct GoldenFlowHomeAdapter: View {
                 sourceYAML: resourceYAML
             )
             await MainActor.run {
+                guard generation == tallyGeneration, command.isConnected == tunnelRunning,
+                      currentProfile?.id == projectionProfile?.id else { return }
                  
                  
                  
@@ -2250,21 +2076,9 @@ struct GoldenFlowHomeAdapter: View {
             openProfiles()
             return
         }
-        if profiles.activeProfileID == profile.id {
-            Task {
-                 
-                 
-                 
-                 
-                 
-                 
-                guard await profiles.selectAndWait(profile, force: true)
-                else { return }
-                await vpn.start()
-                rebind()
-            }
-        } else {
-            profiles.select(profile)
+        Task {
+            await profiles.connectFromHome(profile)
+            rebind()
         }
     }
 }
@@ -2272,37 +2086,13 @@ struct GoldenFlowHomeAdapter: View {
 private enum HomeProfileEditorDestination: Identifiable {
     case rulesOverview(Profile)
     case proxiesOverview(Profile)
-    case customNodes(Profile)
-    case proxySources(Profile)
-    case ruleSets(Profile)
-    case network(Profile)
-    case rules(Profile)
-    case proxyChains(Profile)
-    case advanced(Profile)
-    case additionalFields(Profile)
 
     var id: String {
         switch self {
-        case .customNodes(let profile):
-            "\(profile.id)|custom-nodes"
-        case .proxySources(let profile):
-            "\(profile.id)|proxy-sources"
-        case .ruleSets(let profile):
-            "\(profile.id)|rule-sets"
-        case .network(let profile):
-            "\(profile.id)|network"
-        case .rules(let profile):
-            "\(profile.id)|rules"
         case .rulesOverview(let profile):
             "\(profile.id)|rules-overview"
         case .proxiesOverview(let profile):
             "\(profile.id)|proxies-overview"
-        case .proxyChains(let profile):
-            "\(profile.id)|proxy-chains"
-        case .advanced(let profile):
-            "\(profile.id)|advanced"
-        case .additionalFields(let profile):
-            "\(profile.id)|additional-fields"
         }
     }
 }

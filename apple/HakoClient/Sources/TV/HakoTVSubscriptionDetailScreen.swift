@@ -31,14 +31,20 @@ struct HakoTVSubscriptionDetailScreen: View {
      
      
     enum Verb: Hashable, CaseIterable {
+        case script
+        case rules
         case update
+        case autoUpdate
         case edit
         case use
         case remove
 
         var title: String {
             switch self {
+            case .script: String(localized: "Script")
             case .update: String(localized: "Update now")
+            case .rules: String(localized: "Rules")
+            case .autoUpdate: String(localized: "Auto update")
             case .edit: String(localized: "Edit")
             case .use: String(localized: "Use this profile")
             case .remove: String(localized: "Remove")
@@ -47,7 +53,10 @@ struct HakoTVSubscriptionDetailScreen: View {
 
         var identifier: String {
             switch self {
+            case .script: "script"
             case .update: "update"
+            case .rules: "rules"
+            case .autoUpdate: "auto-update"
             case .edit: "edit"
             case .use: "use"
             case .remove: "remove"
@@ -68,6 +77,12 @@ struct HakoTVSubscriptionDetailScreen: View {
     var onUpdate: (() -> Void)?
      
     var onEdit: () -> Void = {}
+     
+    var onRules: () -> Void = {}
+    var onAutoUpdate: () -> Void = {}
+     
+     
+    var onScript: () -> Void = {}
 
     @State private var asksToRemove = false
 
@@ -106,28 +121,55 @@ struct HakoTVSubscriptionDetailScreen: View {
 
     private var actions: some View {
         List {
-            Section {
-                ForEach(Self.verbs(isCurrent: isCurrent), id: \.self) { verb in
-                    Button(role: verb == .remove ? .destructive : nil) {
-                        perform(verb)
-                    } label: {
-                        if verb == .update {
-                            HStack(spacing: 16) {
-                                if isUpdating { ProgressView() }
-                                Text(Self.updateRowTitle(updating: isUpdating))
-                            }
-                        } else {
-                            Text(verb.title)
+             
+             
+            ForEach(Array(Self.sections(isCurrent: isCurrent, isFetchable: subscription?.hasFetchableAddress ?? false).enumerated()), id: \.offset) { _, verbs in
+                Section {
+                    ForEach(verbs, id: \.self) { verb in
+                        Button(role: verb == .remove ? .destructive : nil) {
+                            perform(verb)
+                        } label: {
+                            row(for: verb)
                         }
+                        .disabled(verb == .update && isUpdating)
+                        .accessibilityIdentifier("tvos.subscription.\(verb.identifier)")
                     }
-                    .disabled(verb == .update && isUpdating)
-                    .accessibilityIdentifier("tvos.subscription.\(verb.identifier)")
                 }
             }
         }
         .listStyle(.grouped)
         .safeAreaPadding(.horizontal, 44)
         .frame(maxWidth: .infinity)
+    }
+
+     
+     
+    @ViewBuilder
+    private func row(for verb: Verb) -> some View {
+        switch verb {
+        case .update:
+            HStack(spacing: 16) {
+                if isUpdating { ProgressView() }
+                Text(Self.updateRowTitle(updating: isUpdating))
+            }
+        case .script:
+            trailing(verb.title, subscription.map(HakoTVProfileScriptScreen.rowValue(for:)) ?? "")
+        case .rules:
+            trailing(verb.title, subscription?.effectiveRules.title ?? "")
+        case .autoUpdate:
+            trailing(verb.title, HakoTVAutoUpdateScreen.title(forHours: subscription?.updateIntervalHours ?? 0))
+        default:
+            Text(verb.title)
+        }
+    }
+
+    private func trailing(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(value)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func perform(_ verb: Verb) {
@@ -138,6 +180,12 @@ struct HakoTVSubscriptionDetailScreen: View {
             } else {
                 store.markUpdated(id, at: Date())
             }
+        case .script:
+            onScript()
+        case .rules:
+            onRules()
+        case .autoUpdate:
+            onAutoUpdate()
         case .edit:
             onEdit()
         case .use:
@@ -170,6 +218,12 @@ struct HakoTVSubscriptionDetailScreen: View {
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("tvos.subscription.updated")
+                 
+                 
+                Text(Self.scriptLine(for: subscription))
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("tvos.subscription.script")
                 if let updateFailure {
                      
                      
@@ -194,8 +248,27 @@ struct HakoTVSubscriptionDetailScreen: View {
      
      
      
-    static func verbs(isCurrent: Bool) -> [Verb] {
-        isCurrent ? [.update, .edit, .remove] : [.edit, .use, .remove]
+     
+     
+     
+    static func scriptLine(for subscription: HakoTVSubscription) -> String {
+        let value = subscription.scriptURL?.host ?? String(localized: "None")
+        return "\(String(localized: "Override script")) · \(value)"
+    }
+
+     
+     
+     
+    static func sections(isCurrent: Bool, isFetchable: Bool = true) -> [[Verb]] {
+        let document: [Verb] = isFetchable ? [.script, .rules] : []
+        var row: [Verb] = isCurrent ? [.update, .autoUpdate, .edit] : [.autoUpdate, .edit, .use]
+        if !isFetchable { row.removeAll { $0 == .autoUpdate } }
+        return [document, row, [.remove]].filter { !$0.isEmpty }
+    }
+
+     
+    static func verbs(isCurrent: Bool, isFetchable: Bool = true) -> [Verb] {
+        sections(isCurrent: isCurrent, isFetchable: isFetchable).flatMap { $0 }
     }
 
     static func updateRowTitle(updating: Bool) -> String {

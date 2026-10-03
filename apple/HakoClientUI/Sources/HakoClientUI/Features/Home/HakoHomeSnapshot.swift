@@ -53,16 +53,6 @@ public struct HakoHomeEgressSnapshot: Codable, Equatable, Sendable {
     public static let unavailable = HakoHomeEgressSnapshot()
 }
 
-public struct HakoHomeAdjustmentSnapshot: Codable, Equatable, Sendable {
-    public let module: HakoHomeAdjustmentModule
-    public let summary: String
-
-    public init(module: HakoHomeAdjustmentModule, summary: String? = nil) {
-        self.module = module
-        self.summary = String((summary ?? module.subtitle).prefix(256))
-    }
-}
-
 public enum HakoHomeRecoveryMode: String, Codable, Equatable, Sendable {
     case none
     case direct
@@ -113,6 +103,30 @@ public struct HakoHomeConnectionIssue:
          
          
         case startupStopped
+         
+         
+         
+         
+         
+         
+        case providerNotLaunched
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        case configurationNotFound
+
+         
+         
+        public var lineTapResetsVPNProfile: Bool {
+            self == .providerNotLaunched || self == .configurationNotFound
+        }
     }
 
     public let message: String
@@ -138,14 +152,30 @@ public struct HakoHomeConnectionIssue:
     }
 }
 
+public enum HakoVPNAuthorizationState: String, Codable, Equatable, Sendable {
+    case required
+    case waiting
+    case notCompleted
+}
+
 public struct HakoHomeConnectionFacts: Codable, Equatable, Sendable {
     public var activeProfileName: String?
     public var vpnStatus: String
     public var errorMessage: String
+    public var vpnAuthorization: HakoVPNAuthorizationState?
      
      
      
     public var errorIsStartupStopped: Bool
+     
+     
+     
+    public var errorIsProviderNotLaunched: Bool
+     
+     
+     
+     
+    public var errorIsConfigurationNotFound: Bool
     public var allowsSystemVPNProfileReset: Bool
     public var isSwitchingProxy: Bool
     public var recoveryMode: HakoHomeRecoveryMode
@@ -157,7 +187,10 @@ public struct HakoHomeConnectionFacts: Codable, Equatable, Sendable {
         activeProfileName: String?,
         vpnStatus: String,
         errorMessage: String = "",
+        vpnAuthorization: HakoVPNAuthorizationState? = nil,
         errorIsStartupStopped: Bool = false,
+        errorIsProviderNotLaunched: Bool = false,
+        errorIsConfigurationNotFound: Bool = false,
         allowsSystemVPNProfileReset: Bool = false,
         isSwitchingProxy: Bool = false,
         recoveryMode: HakoHomeRecoveryMode = .none,
@@ -169,7 +202,10 @@ public struct HakoHomeConnectionFacts: Codable, Equatable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         self.vpnStatus = vpnStatus
         self.errorMessage = errorMessage
+        self.vpnAuthorization = vpnAuthorization
         self.errorIsStartupStopped = errorIsStartupStopped
+        self.errorIsProviderNotLaunched = errorIsProviderNotLaunched
+        self.errorIsConfigurationNotFound = errorIsConfigurationNotFound
         self.allowsSystemVPNProfileReset = allowsSystemVPNProfileReset
         self.isSwitchingProxy = isSwitchingProxy
         self.recoveryMode = recoveryMode
@@ -246,21 +282,45 @@ public enum HakoHomeConnectionPresenter {
         let hasProfile = facts.activeProfileName?.isEmpty == false
         let boundedError = facts.errorMessage
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let kind: HakoHomeConnectionIssue.Kind
+        if facts.errorIsProviderNotLaunched {
+            kind = .providerNotLaunched
+        } else if facts.errorIsConfigurationNotFound {
+            kind = .configurationNotFound
+        } else if facts.errorIsStartupStopped {
+            kind = .startupStopped
+        } else {
+            kind = .connectionFailure
+        }
         let issue = boundedError.isEmpty ? nil : HakoHomeConnectionIssue(
             message: boundedError,
-            kind: facts.errorIsStartupStopped
-                ? .startupStopped
-                : .connectionFailure,
+            kind: kind,
              
              
              
-            allowsSystemVPNProfileReset: facts.errorIsStartupStopped
-                ? false
-                : facts.allowsSystemVPNProfileReset
+             
+             
+            allowsSystemVPNProfileReset: kind.lineTapResetsVPNProfile
+                || (kind != .startupStopped && facts.allowsSystemVPNProfileReset)
         )
 
         if !hasProfile {
             return .unavailable
+        }
+        if let authorization = facts.vpnAuthorization, issue == nil,
+           !["connected", "connecting", "reasserting", "disconnecting"].contains(status) {
+            let waiting = authorization == .waiting
+            return .init(
+                phase: waiting ? .connecting : .ready,
+                title: "VPN Authorization",
+                subtitle: waiting
+                    ? "Allow VPN setup to connect."
+                    : authorization == .notCompleted
+                        ? "Tap Retry, then allow VPN setup."
+                        : "Tap START, then allow VPN setup.",
+                primaryAction: waiting ? .cancel : .connect,
+                primaryActionTitle: waiting ? nil : authorization == .notCompleted ? "Retry" : "START"
+            )
         }
         if facts.isSwitchingProxy
             && ["connected", "reasserting"].contains(status)
@@ -399,9 +459,12 @@ public enum HakoHomeCommand: Codable, Equatable, Sendable {
     case openProfiles
     case performPrimaryAction(HakoHomePrimaryAction)
     case showConnectionIssue
+     
+     
+     
+    case resetVPNProfile
     case openProxies
     case openRules
-    case openAdjustment(HakoHomeAdjustmentAction)
     case openRuntimeConfiguration
     case setCards([HakoHomeCard])
     case setTrafficScope(HakoHomeTrafficScope)

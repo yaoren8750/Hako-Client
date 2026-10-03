@@ -1,4 +1,5 @@
 import Combine
+import HakoClientKit
 import HakoClientUI
 import SwiftUI
 
@@ -7,10 +8,17 @@ struct ProxiesRuntimeFacts {
      
      
      
+    var endpointDelays: [String: [String: Int]] = [:]
+    var defaultDelayTestURL: String = DelayTestSettings.url()
+     
+     
+     
      
     var failureReasons: [String: String] = [:]
     var nowByGroup: [String: String] = [:]
     var resolvedNowByGroup: [String: String] = [:]
+     
+    var fixedByGroup: [String: String] = [:]
      
      
      
@@ -128,7 +136,7 @@ struct ProxiesOverviewAdapter: View {
      
     private let actionRefusals: [String: String]
      
-    private let testMember: ((String) -> Void)?
+    private let testMember: ((String, String?) -> Void)?
      
     private let editMember: ((String) -> Void)?
     private let inspectMember: ((String) -> Void)?
@@ -137,6 +145,8 @@ struct ProxiesOverviewAdapter: View {
      
      
     private let rememberedExpandedGroups: Set<String>
+    private let rememberedOpenGroup: String?
+    private let readerFoldedAll: Bool
 
     @State private var preferences:
         HakoProxiesDisplayPreferences
@@ -161,6 +171,8 @@ struct ProxiesOverviewAdapter: View {
      
      
     @Environment(\.hakoLatencyPulseGate) private var latencyPulseGate
+     
+    @Environment(\.locale) private var locale
 
      
      
@@ -184,6 +196,11 @@ struct ProxiesOverviewAdapter: View {
      
      
     @State private var hiddenHold = SnapshotHold()
+     
+     
+     
+     
+    @State private var shownAgain = 0
 
     final class SnapshotHold {
         var value: AppleClientSnapshot?
@@ -258,6 +275,10 @@ struct ProxiesOverviewAdapter: View {
                 results: accumulatedResults,
                 testing: pulse.testing,
                 groupTerminals: accumulatedGroupTerminals,
+                 
+                 
+                 
+                groupTerminalKeys: pulse.groupTerminalKeys,
                 completed: pulse.completed,
                 total: pulse.total,
                 isTesting: pulse.isTesting
@@ -301,11 +322,13 @@ struct ProxiesOverviewAdapter: View {
         refreshCatalog: (() -> Void)? = nil,
         unpinGroup: ((String) -> Void)? = nil,
         actionRefusals: [String: String] = [:],
-        testMember: ((String) -> Void)? = nil,
+        testMember: ((String, String?) -> Void)? = nil,
         editMember: ((String) -> Void)? = nil,
         inspectMember: ((String) -> Void)? = nil,
         initiallyExpandedGroup: String? = nil,
         rememberedExpandedGroups: Set<String> = [],
+        rememberedOpenGroup: String? = nil,
+        readerFoldedAll: Bool = false,
         ownsNavigationContainer: Bool = true
     ) {
         self.ownsNavigationContainer = ownsNavigationContainer
@@ -334,6 +357,8 @@ struct ProxiesOverviewAdapter: View {
         self.inspectMember = inspectMember
         self.initiallyExpandedGroup = initiallyExpandedGroup
         self.rememberedExpandedGroups = rememberedExpandedGroups
+        self.rememberedOpenGroup = rememberedOpenGroup
+        self.readerFoldedAll = readerFoldedAll
         _preferences = State(
             initialValue:
                 HakoProxiesDisplayPreferences.uiTestOverride()
@@ -443,6 +468,57 @@ struct ProxiesOverviewAdapter: View {
                     isTesting: false
                 ))
             }
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+            .onChange(of: effectiveRuntime.resolvedNowByGroup) { resolvedNowByGroup in
+                guard !isTestingLatency else { return }
+                pulseHub.replaceIdle(currentPulse(
+                    groupTerminals: resolvedNowByGroup,
+                    isTesting: false
+                ))
+            }
+             
+             
+             
+             
+             
+             
+             
+            .onChange(of: isConnected) { connected in
+                guard !isTestingLatency || !connected else { return }
+                pulseHub.replaceIdle(currentPulse(connected: connected, isTesting: false))
+            }
+            .onReceive(
+                latencyPulseGate?.opened.eraseToAnyPublisher()
+                    ?? Empty<Void, Never>(completeImmediately: false).eraseToAnyPublisher()
+            ) {
+                 
+                 
+                guard hiddenHold.value != nil else { return }
+                hiddenHold.value = nil
+                hiddenHold.key = nil
+                shownAgain &+= 1
+            }
             .onReceive(
                 sweepEvents
                     ?? Empty<LatencySweepBatch, Never>().eraseToAnyPublisher()
@@ -451,13 +527,17 @@ struct ProxiesOverviewAdapter: View {
                  
                 pulseHub.send(HakoLatencyPulse(
                     results: batch.results.reduce(into: [:]) { states, entry in
+                         
+                         
+                        let name = entry.key.split(separator: "\u{1F}", maxSplits: 1).last.map(String.init) ?? entry.key
                         states[entry.key] = ProxiesLatencyMapping.state(
                             delay: entry.value,
-                            category: effectiveRuntime.failureReasons[entry.key] ?? ""
+                            category: effectiveRuntime.failureReasons[name] ?? ""
                         )
                     },
                     testing: batch.testing,
                     groupTerminals: batch.groupTerminals,
+                    groupTerminalKeys: batch.groupTerminalKeys,
                     completed: batch.completed,
                     total: batch.total,
                     isTesting: !batch.finished
@@ -500,12 +580,29 @@ struct ProxiesOverviewAdapter: View {
 
     private func currentPulse(
         results: [String: HakoProxyLatencyState]? = nil,
+        groupTerminals: [String: String]? = nil,
+        connected: Bool? = nil,
         isTesting: Bool
     ) -> HakoLatencyPulse {
         HakoLatencyPulse(
             results: results ?? latencyStates,
             testing: testingNames,
-            groupTerminals: effectiveRuntime.resolvedNowByGroup,
+             
+             
+             
+             
+             
+             
+            groupTerminals: (connected ?? isConnected)
+                ? (groupTerminals ?? effectiveRuntime.resolvedNowByGroup)
+                : [:],
+             
+             
+             
+            groupTerminalKeys: (connected ?? isConnected)
+                ? NodeInventory.groupTerminalKeys(
+                    groups: effectiveRuntime.catalog, defaultURL: effectiveRuntime.defaultDelayTestURL)
+                : [:],
             completed: latencyCompletedCount,
             total: latencyTotalCount,
             isTesting: isTesting
@@ -528,21 +625,6 @@ struct ProxiesOverviewAdapter: View {
      
      
      
-    private var composedGroups: [ProxiesOverviewModel.Group] {
-        HakoPerf.measure("proxies.compose.groups") {
-            ProxyBrowsingVisibility.groups(
-                ProxiesRuntimeCatalogComposer.groups(
-                    source: sourceModel.groups,
-                    runtime: effectiveRuntime.catalog,
-                    isConnected: isConnected
-                ),
-                mode: outboundMode,
-                name: \.name,
-                isHidden: \.hidden
-            )
-        }
-    }
-
     private var sharedSnapshot: AppleClientSnapshot {
          
          
@@ -556,6 +638,7 @@ struct ProxiesOverviewAdapter: View {
          
          
          
+        _ = shownAgain
         if !isActiveRoot, let held = hiddenHold.value {
             HakoPerf.count("proxies.snapshot.skipped-hidden")
             return held
@@ -582,6 +665,21 @@ struct ProxiesOverviewAdapter: View {
         hiddenHold.value = snapshot
         hiddenHold.key = holdKey
         return snapshot
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func pinnedSelection(
+        projected: String?,
+        kernelFixed: String?,
+        isConnected: Bool
+    ) -> String? {
+        projected ?? (isConnected ? kernelFixed : nil)
     }
 
      
@@ -621,30 +719,51 @@ struct ProxiesOverviewAdapter: View {
             resolvedNowByGroup: effectiveRuntime.resolvedNowByGroup,
             isConnected: isConnected
         )
-        let groups = HakoPerf.measure("proxies.snapshot.groups") {
+         
+         
+         
+         
+         
+         
+         
+        let pins = effectiveRuntime.fixedByGroup
+        let projection = HakoPerf.measure("proxies.snapshot.groups") {
             projections.groups(groupsKey) {
-            composedGroups.map { group in
-                HakoProxyGroupSnapshot(
-                    name: group.name,
-                    type: group.type,
-                    members: projections.members(of: group),
-                    configuredSelection:
-                        group.configuredSelection,
-                    runtimeSelection:
-                        isConnected
-                            ? effectiveRuntime
-                                .nowByGroup[group.name]
-                            : nil,
-                    resolvedRuntimeRoute:
-                        isConnected
-                            ? effectiveRuntime
-                                .resolvedNowByGroup[group.name]
-                            : nil,
-                    icon: group.icon
+                let all = HakoPerf.measure("proxies.compose.groups") {
+                    ProxiesRuntimeCatalogComposer.groups(
+                        source: sourceModel.groups,
+                        runtime: effectiveRuntime.catalog,
+                        isConnected: isConnected
+                    )
+                }
+                let urlByGroup = Dictionary(
+                    effectiveRuntime.catalog.map { ($0.name, $0.testURL) }, uniquingKeysWith: { first, _ in first })
+                let defaultURL = effectiveRuntime.defaultDelayTestURL
+                func snapshot(_ group: ProxiesOverviewModel.Group) -> HakoProxyGroupSnapshot {
+                    HakoProxyGroupSnapshot(
+                        name: group.name,
+                        type: group.type,
+                        members: ProxyBrowsingVisibility.members(
+                            projections.members(of: group, latencyEndpoint: urlByGroup[group.name] ?? nil,
+                                                defaultURL: defaultURL),
+                            of: group.name,
+                            mode: outboundMode,
+                            name: \.name
+                        ),
+                        configuredSelection: Self.pinnedSelection(projected: group.configuredSelection, kernelFixed: pins[group.name], isConnected: isConnected),
+                        runtimeSelection: isConnected ? effectiveRuntime.nowByGroup[group.name] : nil,
+                        resolvedRuntimeRoute: isConnected ? effectiveRuntime.resolvedNowByGroup[group.name] : nil,
+                        icon: group.icon,
+                        emptyFallback: group.emptyFallback
+                    )
+                }
+                return ProxiesProjectionMemo.GroupProjection(
+                    listed: ProxyBrowsingVisibility.groups(all, mode: outboundMode, name: \.name, isHidden: \.hidden).map(snapshot),
+                    hidden: all.filter(\.hidden).map(snapshot)
                 )
             }
-            }
         }
+        let groups = projection.listed
         let searchable = HakoPerf.measure("proxies.snapshot.searchable") {
             ProxiesRuntimeCatalogComposer.searchableProxies(
                 source: sourceModel.proxies,
@@ -658,6 +777,13 @@ struct ProxiesOverviewAdapter: View {
                 )
             }
         }
+         
+         
+         
+         
+        let editableMembers: Set<String> = editMember == nil
+            ? []
+            : Set(sourceModel.proxies.map(\.name))
         let providers = HakoPerf.measure("proxies.snapshot.providers") {
             ProxiesRuntimeCatalogComposer.providers(
                 source: sourceModel.providers,
@@ -666,6 +792,7 @@ struct ProxiesOverviewAdapter: View {
             ).map { provider in
                 HakoProxyProviderSnapshot(
                     name: provider.name,
+                    displayName: ConfigurationComposer.displayName(forComposedProviderName: provider.name),
                     type: provider.type,
                     nodeCount: provider.nodeCount,
                      
@@ -719,6 +846,7 @@ struct ProxiesOverviewAdapter: View {
             ),
             proxies: HakoProxiesSnapshot(
                 groups: groups,
+                hiddenGroups: projection.hidden,
                 searchableProxies: searchable,
                 providers: providers,
                 ungrouped: ungrouped,
@@ -739,15 +867,32 @@ struct ProxiesOverviewAdapter: View {
                 initiallyExpandedGroup:
                     initiallyExpandedGroup,
                 rememberedExpandedGroups: rememberedExpandedGroups,
-                displayPreferences: preferences
-            ,
+                displayPreferences: preferences,
+                 
+                 
+                 
+                catalogState: isConnected
+                    ? nil
+                    : sourceModel.catalogRefusal.map {
+                        .failed(message: HakoCopy.format(
+                            "The core cannot read this configuration: %@. Connecting will get the same answer.",
+                            locale: locale, $0))
+                    }
+                    ?? (sourceModel.catalogUnavailable
+                        ? .failed(message: HakoCopy.string(
+                            "The groups cannot be read right now; they appear once you connect.",
+                            locale: locale))
+                        : nil),
                 canRefreshCatalog: refreshCatalog != nil,
                  
                  
                  
                  
                 canUnpinGroups: unpinGroup != nil,
-                actionRefusals: actionRefusals
+                actionRefusals: actionRefusals,
+                editableMembers: editableMembers,
+                rememberedOpenGroup: rememberedOpenGroup,
+                readerFoldedAll: readerFoldedAll
             ),
             capabilities: AppleClientCapabilities([
                 .proxies: .available,
@@ -765,8 +910,22 @@ struct ProxiesOverviewAdapter: View {
                 category: effectiveRuntime.failureReasons[name] ?? ""
             )
         }
+         
+         
+         
+        values.merge(projections.endpointLatencyStates(
+            effectiveRuntime.endpointDelays,
+            namedURLs: Set(effectiveRuntime.catalog.compactMap(\.testURL)),
+            failureReasons: effectiveRuntime.failureReasons,
+            defaultURL: effectiveRuntime.defaultDelayTestURL
+        )) { _, keyed in keyed }
+        let namedURLs = Set(effectiveRuntime.catalog.compactMap(\.testURL))
         for name in testingNames {
             values[name] = .testing
+             
+            for url in namedURLs {
+                values[NodeInventory.latencyKey(name, endpoint: url, defaultURL: effectiveRuntime.defaultDelayTestURL)] = .testing
+            }
         }
         return values
     }
@@ -789,8 +948,8 @@ struct ProxiesOverviewAdapter: View {
                 requestTestAll()
             case .testGroup(let name):
                 testGroup?(name)
-            case .testMember(let name):
-                testMember?(name)
+            case .testMember(let name, let group):
+                testMember?(name, group)
             case .editMember(let name):
                 editMember?(name)
             case .inspectMember(let name):

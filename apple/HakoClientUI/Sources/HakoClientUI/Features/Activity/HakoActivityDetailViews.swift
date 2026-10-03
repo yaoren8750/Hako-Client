@@ -37,11 +37,17 @@ enum HakoActivityByteFormatter {
  
 struct HakoActivityRowText: Equatable, Sendable {
      
-    let from: String?
+     
+     
+    let host: String
      
     let traffic: String
      
-    let lastSeen: String?
+    let download: String
+    let upload: String
+     
+     
+    let time: String?
 }
 
  
@@ -69,19 +75,37 @@ enum HakoActivityRowTextFactory {
 
     static func text(
         for connection: HakoActivityConnectionSnapshot,
-        lastSeen: Date?,
+        at moment: Date?,
         locale: Locale,
         bytes: ByteCountFormatter,
         time: Date.FormatStyle
     ) -> HakoActivityRowText {
-        HakoActivityRowText(
-            from: connection.source.isEmpty
-                ? nil
-                : HakoCopy.format("From %@", locale: locale, connection.source),
-            traffic: "↑ \(bytes.string(fromByteCount: connection.upload))"
-                + "  ↓ \(bytes.string(fromByteCount: connection.download))",
-            lastSeen: lastSeen.map { time.format($0) }
+        let download = bytes.string(fromByteCount: connection.download)
+        let upload = bytes.string(fromByteCount: connection.upload)
+        return HakoActivityRowText(
+            host: host(of: connection),
+            traffic: "↓ \(download)  ↑ \(upload)",
+            download: connection.download == 0 ? "–" : download,
+            upload: connection.upload == 0 ? "–" : upload,
+            time: moment.map { time.format($0) }
         )
+    }
+
+    static func host(of connection: HakoActivityConnectionSnapshot) -> String {
+        let destination = connection.destination
+        let implied: String
+        switch HakoActivityTableRow(connection: connection).trafficProtocol {
+        case .https, .quic: implied = ":443"
+        case .http: implied = ":80"
+        default: return destination
+        }
+         
+         
+         
+        guard destination.hasSuffix(implied),
+              destination.hasSuffix("]" + implied) || destination.filter({ $0 == ":" }).count == 1
+        else { return destination }
+        return String(destination.dropLast(implied.count))
     }
 
     static func rows(
@@ -93,7 +117,7 @@ enum HakoActivityRowTextFactory {
         return connections.map {
             HakoActivityConnectionRowModel(
                 connection: $0,
-                text: text(for: $0, lastSeen: nil, locale: locale, bytes: bytes, time: time)
+                text: text(for: $0, at: $0.start, locale: locale, bytes: bytes, time: time)
             )
         }
     }
@@ -107,8 +131,7 @@ final class HakoActivityRowTextCache {
     private struct Key: Equatable {
         let upload: Int64
         let download: Int64
-        let lastSeen: Date?
-        let source: String
+        let firstSeen: Date?
         let locale: Locale
     }
 
@@ -122,7 +145,7 @@ final class HakoActivityRowTextCache {
         let connection = entry.connection
         let key = Key(
             upload: connection.upload, download: connection.download,
-            lastSeen: entry.lastSeen, source: connection.source, locale: locale
+            firstSeen: entry.firstSeen, locale: locale
         )
         if let cached = entries[entry.id], cached.key == key { return cached.text }
         if time?.locale != locale {
@@ -130,7 +153,7 @@ final class HakoActivityRowTextCache {
         }
         builds += 1
         let text = HakoActivityRowTextFactory.text(
-            for: connection, lastSeen: entry.lastSeen, locale: locale,
+            for: connection, at: entry.firstSeen, locale: locale,
             bytes: bytes, time: time?.style ?? HakoActivityRowTextFactory.timeStyle(locale: locale)
         )
         entries[entry.id] = (key, text)
@@ -181,10 +204,20 @@ public struct HakoConnectionsView<Icon: View>: View {
      
     @State private var preparedSummaries: [HakoActivityChainSummary] = []
      
+    @State private var preparedBarTotal = 0
+    @State private var preparedBarSummaries: [HakoActivityChainSummary] = []
+     
      
     @State private var hasPrepared = false
     @State private var selected:
         HakoActivityConnectionSnapshot?
+     
+     
+     
+    @State private var preparedConnections: [HakoActivityConnectionSnapshot] = []
+    @State private var preparedTraffic: (upload: Int64, download: Int64) = (0, 0)
+    @State private var tableSelectionCount = 0
+    @Environment(\.hakoPushRoute) private var pushRoute
 
     public init(
         snapshot: AppleClientSnapshot,
@@ -204,7 +237,63 @@ public struct HakoConnectionsView<Icon: View>: View {
         self.icon = icon
     }
 
+     
+     
+    private var isRegular: Bool {
+        presentationClass == .regularTouch
+            && (listWidth == 0 || listWidth >= HakoActivityRowColumns.minimumRegularWidth)
+    }
+     
+     
+    @State private var listWidth: CGFloat = 0
+
     public var body: some View {
+        content
+            .accessibilityIdentifier("connections.overview")
+            .accessibilityValue(activityAccessibilityValue)
+             
+             
+             
+             
+             
+             
+             
+            .task(id: isShown ? preparationKey : nil) {
+                guard isShown else { return }
+                await prepareConnections()
+            }
+            .hakoActivityLensToolbar(active: isShown) { toolbarContent }
+            .confirmationDialog(
+                "Close all active connections?",
+                isPresented: $confirmsCloseAll
+            ) {
+                Button("Close All", role: .destructive) {
+                    send(.closeAllConnections)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Apps may reconnect automatically.")
+            }
+            .modifier(
+                HakoActivityDetailHost(
+                    selected: $selected,
+                    title: "Connection Details",
+                    actions: actions,
+                    snapshot: snapshot
+                )
+            )
+    }
+
+    @ViewBuilder
+    private var content: some View {
+#if os(macOS)
+        macTable
+#else
+        list
+#endif
+    }
+
+    private var list: some View {
         List {
             if !keywords.isEmpty {
                 filterSection
@@ -242,8 +331,27 @@ public struct HakoConnectionsView<Icon: View>: View {
             }
 
             if !chainSummaries.isEmpty {
-                Section("Chain Totals") {
+                Section {
                     ForEach(chainSummaries) { summary in
+                        Group {
+                        if isRegular {
+                             
+                             
+                            HStack(spacing: HakoActivityRowColumns.spacing) {
+                                Text(summary.path)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Group {
+                                    Text(verbatim: "\(summary.connectionCount)")
+                                    Text(verbatim: HakoActivityByteFormatter.count(summary.download))
+                                    Text(verbatim: HakoActivityByteFormatter.count(summary.upload))
+                                }
+                                .frame(width: HakoActivityRowColumns.bytes, alignment: .trailing)
+                                .font(.subheadline.monospacedDigit())
+                            }
+                            .font(.subheadline)
+                        } else {
                         VStack(
                             alignment: .leading,
                             spacing: HakoTheme.Spacing.tight
@@ -254,17 +362,41 @@ public struct HakoConnectionsView<Icon: View>: View {
                                     horizontal: false,
                                     vertical: true
                                 )
-                            Text(
-                                "\(summary.connectionCount) connections · ↑ \(HakoActivityByteFormatter.count(summary.upload)) · ↓ \(HakoActivityByteFormatter.count(summary.download))"
-                            )
+                             
+                             
+                            (Text(hako: .format(summary.connectionCount == 1 ? "%@ connection" : "%@ connections", [String(summary.connectionCount)]))
+                                + Text(verbatim: " · ↑ \(HakoActivityByteFormatter.count(summary.upload)) · ↓ \(HakoActivityByteFormatter.count(summary.download))"))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                         }
+                        }
+                        }
                         .accessibilityElement(children: .combine)
+                    }
+                } header: {
+                    if isRegular {
+                         
+                        HStack(spacing: HakoActivityRowColumns.spacing) {
+                            Text("Chain Totals").frame(maxWidth: .infinity, alignment: .leading)
+                            Group {
+                                Text("Connections")
+                                Text("Download")
+                                Text("Upload")
+                            }
+                            .frame(width: HakoActivityRowColumns.bytes, alignment: .trailing)
+                        }
+                        .modifier(HakoActivityColumnTitleStyle())
+                    } else {
+                        Text("Chain Totals")
                     }
                 }
             }
 
+             
+             
+             
+             
+            Section {
             ForEach(visibleConnections) { row in
                 let connection = row.connection
                 HakoActivityConnectionRow(
@@ -284,6 +416,7 @@ public struct HakoConnectionsView<Icon: View>: View {
                         .closingConnectionIDs
                         .contains(connection.id),
                     palette: palette,
+                    isRegular: isRegular,
                     onKeyword: { keywords.insert($0) },
                     onClose: {
                         send(
@@ -312,44 +445,94 @@ public struct HakoConnectionsView<Icon: View>: View {
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("connections.renderCap")
             }
+            } header: {
+                if isRegular && !visibleConnections.isEmpty {
+                    HakoActivityColumnHeader(showsAction: snapshot.activity.canManageConnections)
+                }
+            }
         }
         .hakoGroupedList()
+        .hakoActivityMeasuresWidth($listWidth)
          
          
          
         .hakoListRetainsRowSelection()
         .hakoActivityListCanvas(palette.canvas)
-        .accessibilityIdentifier("connections.overview")
-        .accessibilityValue(activityAccessibilityValue)
-         
-         
-         
-         
-        .task(id: preparationKey) { await prepareConnections() }
         .refreshable {
             await perform(.refresh)
         }
-        .hakoActivityLensToolbar(active: isShown) { toolbarContent }
-        .confirmationDialog(
-            "Close all active connections?",
-            isPresented: $confirmsCloseAll
-        ) {
-            Button("Close All", role: .destructive) {
-                send(.closeAllConnections)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Apps may reconnect automatically.")
-        }
-        .modifier(
-            HakoActivityDetailHost(
-                selected: $selected,
-                title: "Connection Details",
-                actions: actions,
-                snapshot: snapshot
-            )
-        )
     }
+
+#if os(macOS)
+     
+     
+     
+    private var macTable: some View {
+        VStack(alignment: .leading, spacing: HakoTheme.Spacing.compact) {
+            if let error = snapshot.activity.errorDescription, !error.isEmpty {
+                HakoActivityMacBanner(
+                    message: error,
+                    retry: snapshot.activity.phase == .failed ? { send(.refresh) } : nil
+                )
+            }
+            HakoActivityMacFilterBar(
+                summaries: preparedBarSummaries,
+                total: preparedBarTotal,
+                keywords: $keywords
+            )
+            if !chainSummaries.isEmpty {
+                HakoActivityMacChainTotals(summaries: chainSummaries, palette: palette) { outbound in
+                    keywords.insert(outbound)
+                }
+            }
+            if hasPrepared && preparedConnections.isEmpty {
+                ScrollView { emptyState }
+            } else {
+                HakoActivityTableCard(palette: palette) {
+                HakoActivityTable(
+                    kind: .connections,
+                    rows: preparedConnections.map(HakoActivityTableRow.init(connection:)),
+                    locale: locale,
+                    canClose: snapshot.activity.canManageConnections
+                        && !snapshot.activity.isClosingAll,
+                    onOpen: { row in openDetails(row.connection, title: "Connection Details") },
+                    onClose: { rows in
+                        for row in rows { send(.closeConnection(id: row.connection.id)) }
+                    },
+                    onFilter: { keywords.insert($0) },
+                    onSelectionCount: { tableSelectionCount = $0 }
+                )
+                }
+            }
+            HakoActivityMacStatusLine(
+                count: preparedConnections.count,
+                total: preparedTotal,
+                selected: tableSelectionCount,
+                upload: preparedTraffic.upload,
+                download: preparedTraffic.download,
+                kind: .connections
+            )
+        }
+        .padding(.vertical, HakoTheme.Spacing.standard)
+    }
+
+    private func openDetails(_ connection: HakoActivityConnectionSnapshot, title: String) {
+        guard let pushRoute else { selected = connection; return }
+        let token = UUID()
+        let actions = actions
+        let snapshot = snapshot
+        HakoViewRouteRegistry.set(token, ownership: .oneShot, onReturn: {}) {
+            AnyView(HakoActivityMacConnectionDetail(
+                connection: connection, title: title, palette: palette
+            ) { text in
+                Task { @MainActor in
+                    try? await actions.perform(.activity(.copyText(text)), allowedBy: snapshot)
+                }
+            })
+        }
+        pushRoute(HakoViewRoute(id: token))
+    }
+#endif
 
     private var visibleConnections:
         [HakoActivityConnectionRowModel]
@@ -401,28 +584,84 @@ public struct HakoConnectionsView<Icon: View>: View {
         let result = await Task.detached(priority: .userInitiated) {
             () -> (
                 rows: [HakoActivityConnectionRowModel],
+                connections: [HakoActivityConnectionSnapshot],
+                traffic: (upload: Int64, download: Int64),
                 total: Int,
-                summaries: [HakoActivityChainSummary]
+                summaries: [HakoActivityChainSummary],
+                barTotal: Int,
+                barSummaries: [HakoActivityChainSummary]
             ) in
-            let full = HakoActivityProjection.connections(
-                values, query: query, sort: sort, keywords: keywords,
+#if os(macOS)
+             
+             
+             
+             
+             
+             
+            let outbounds = Set(values.compactMap(\.chains.first))
+            let chosen = keywords.intersection(outbounds).map { $0.lowercased() }
+            let projectionKeywords = keywords.subtracting(outbounds)
+#else
+            let projectionKeywords = keywords
+#endif
+            let projected = HakoActivityProjection.connections(
+                values, query: query, sort: sort, keywords: projectionKeywords,
                 limit: nil
             )
+#if os(macOS)
+            let unchosen = projected
+            let full = chosen.isEmpty ? projected : projected.filter { connection in
+                chosen.allSatisfy { keyword in
+                    connection.process.lowercased() == keyword
+                        || connection.chains.contains { $0.lowercased() == keyword }
+                }
+            }
+#else
+            let full = projected
+#endif
+#if os(macOS)
+             
+             
+            var upload: Int64 = 0
+            var download: Int64 = 0
+            for connection in full {
+                upload = upload &+ connection.upload
+                download = download &+ connection.download
+            }
+            return (
+                rows: [],
+                connections: Array(full.prefix(HakoActivityProjection.tableRenderCap)),
+                traffic: (upload, download),
+                total: full.count,
+                summaries: HakoActivityProjection.chainSummaries(full),
+                barTotal: unchosen.count,
+                barSummaries: HakoActivityProjection.chainSummaries(unchosen)
+            )
+#else
             return (
                 rows: HakoActivityRowTextFactory.rows(
                     Array(full.prefix(HakoActivityProjection.connectionRenderCap)),
                     locale: locale
                 ),
+                connections: [],
+                traffic: (0, 0),
                 total: full.count,
-                summaries: HakoActivityProjection.chainSummaries(full)
+                summaries: HakoActivityProjection.chainSummaries(full),
+                barTotal: 0,
+                barSummaries: []
             )
+#endif
         }.value
          
          
         if Task.isCancelled { return }
         prepared = result.rows
+        preparedConnections = result.connections
+        preparedTraffic = result.traffic
         preparedTotal = result.total
         preparedSummaries = result.summaries
+        preparedBarTotal = result.barTotal
+        preparedBarSummaries = result.barSummaries
         hasPrepared = true
     }
 
@@ -518,6 +757,9 @@ public struct HakoConnectionsView<Icon: View>: View {
          
         ToolbarItem(placement: .primaryAction) {
             ControlGroup {
+#if !os(macOS)
+                 
+                 
                 Menu {
                     Picker("Sort", selection: $sort) {
                         ForEach(
@@ -536,12 +778,15 @@ public struct HakoConnectionsView<Icon: View>: View {
                     )
                 }
                 .accessibilityIdentifier("connections.sort")
+#endif
 
                 if snapshot.activity.canManageConnections {
+#if !os(macOS)
                      
                      
                      
                     HakoToolbarDivider()
+#endif
 
                     Button(role: .destructive) {
                         confirmsCloseAll = true
@@ -613,14 +858,78 @@ public struct HakoRequestsView<Icon: View>: View {
     ) {
         self.snapshot = snapshot
         self.actions = actions
-        _ = presentationClass
+        self.presentationClass = presentationClass
         self.palette = palette
         self.query = query
         self.isShown = isShown
         self.icon = icon
     }
 
+    private let presentationClass: HakoPresentationClass
+     
+     
+    private var isRegular: Bool {
+        presentationClass == .regularTouch
+            && (listWidth == 0 || listWidth >= HakoActivityRowColumns.minimumRegularWidth)
+    }
+     
+     
+    @State private var listWidth: CGFloat = 0
+
     public var body: some View {
+        requestsContent
+         
+        .hakoActivityLensToolbar(active: isShown) {
+            ToolbarItem(placement: .primaryAction) {
+                 
+                 
+                 
+                 
+                ControlGroup {
+                Button {
+                    autoScrollToNewest.toggle()
+                } label: {
+                     
+                     
+                     
+                     
+                     
+                     
+                     
+                    Label(
+                        autoScrollToNewest
+                            ? "Pause auto-scroll"
+                            : "Resume auto-scroll",
+                        systemImage:
+                            autoScrollToNewest
+                            ? HakoSymbol.pause.rawValue
+                            : HakoSymbol.play.rawValue   
+                    )
+                }
+                .accessibilityIdentifier("requests.autoScroll")
+                }
+                .hakoReaderControlGroupStyle()
+            }
+        }
+        .modifier(
+            HakoActivityDetailHost(
+                selected: $selected,
+                title: "Request Details",
+                actions: actions,
+                snapshot: snapshot
+            )
+        )
+        .accessibilityIdentifier("requests.overview")
+    }
+
+    @ViewBuilder
+    private var requestsContent: some View {
+#if os(macOS)
+        macTable
+            .onChange(of: isShown) { shown in
+                frozenEntries = shown ? nil : entries
+            }
+#else
         ScrollViewReader { proxy in
             List {
                 if !keywords.isEmpty {
@@ -684,6 +993,8 @@ public struct HakoRequestsView<Icon: View>: View {
                     .listRowBackground(Color.clear)
                 }
 
+                 
+                Section {
                 ForEach(entries) { entry in
                     HakoActivityRequestRow(
                         entry: entry,
@@ -692,6 +1003,7 @@ public struct HakoRequestsView<Icon: View>: View {
                         actions: actions,
                         snapshot: snapshot,
                         palette: palette,
+                        isRegular: isRegular,
                         onKeyword: {
                             keywords.insert($0)
                         }
@@ -704,6 +1016,11 @@ public struct HakoRequestsView<Icon: View>: View {
                         )
                     )
                 }
+                } header: {
+                    if isRegular && !entries.isEmpty {
+                        HakoActivityColumnHeader(showsAction: false)
+                    }
+                }
             }
          
          
@@ -711,6 +1028,7 @@ public struct HakoRequestsView<Icon: View>: View {
             rowTexts.retain(Set(entries.map(\.id)))
         }
             .hakoGroupedList()
+            .hakoActivityMeasuresWidth($listWidth)
             .hakoListRetainsRowSelection()
             .hakoActivityListCanvas(palette.canvas)
             .onChange(of: entries.first?.id) {
@@ -725,49 +1043,78 @@ public struct HakoRequestsView<Icon: View>: View {
                 }
             }
         }
-         
-        .hakoActivityLensToolbar(active: isShown) {
-            ToolbarItem(placement: .primaryAction) {
-                 
-                 
-                 
-                 
-                ControlGroup {
-                Button {
-                    autoScrollToNewest.toggle()
-                } label: {
-                     
-                     
-                     
-                     
-                     
-                     
-                     
-                    Label(
-                        autoScrollToNewest
-                            ? "Pause auto-scroll"
-                            : "Resume auto-scroll",
-                        systemImage:
-                            autoScrollToNewest
-                            ? HakoSymbol.pause.rawValue
-                            : HakoSymbol.play.rawValue   
-                    )
-                }
-                .accessibilityIdentifier("requests.autoScroll")
-                }
-                .hakoReaderControlGroupStyle()
-            }
-        }
-        .modifier(
-            HakoActivityDetailHost(
-                selected: $selected,
-                title: "Request Details",
-                actions: actions,
-                snapshot: snapshot
-            )
-        )
-        .accessibilityIdentifier("requests.overview")
+#endif
     }
+
+#if os(macOS)
+    @State private var tableSelectionCount = 0
+    @Environment(\.hakoPushRoute) private var pushRoute
+
+     
+     
+     
+     
+     
+    @State private var frozenEntries: [HakoActivityRequestSnapshot]?
+
+    private var macTable: some View {
+        let entries = isShown ? entries : (frozenEntries ?? entries)
+        return VStack(alignment: .leading, spacing: HakoTheme.Spacing.compact) {
+            HakoActivityMacFilterBar(summaries: [], total: entries.count, keywords: $keywords)
+            if entries.isEmpty {
+                ScrollView {
+                    HakoEmptyState(
+                        title: query.isEmpty && keywords.isEmpty ? "No Requests" : "No Matches",
+                        message: requestEmptyMessage,
+                        isLoading: snapshot.activity.phase == .loading
+                    ) {
+                        icon(query.isEmpty && keywords.isEmpty ? .listBulletRectanglePortrait : .magnifyingglass)
+                    }
+                    .padding(.vertical, HakoTheme.Spacing.section)
+                }
+            } else {
+                HakoActivityTableCard(palette: palette) {
+                HakoActivityTable(
+                    kind: .requests,
+                    rows: entries.map(HakoActivityTableRow.init(request:)),
+                    locale: rowLocale,
+                    canClose: false,
+                    followsNewest: autoScrollToNewest,
+                    onOpen: { row in openDetails(row.connection) },
+                    onFilter: { keywords.insert($0) },
+                    onSelectionCount: { tableSelectionCount = $0 }
+                )
+                }
+            }
+            HakoActivityMacStatusLine(
+                count: entries.count,
+                total: entries.count,
+                selected: tableSelectionCount,
+                upload: nil,
+                download: nil,
+                kind: .requests
+            )
+        }
+        .padding(.vertical, HakoTheme.Spacing.standard)
+    }
+
+    private func openDetails(_ connection: HakoActivityConnectionSnapshot) {
+        guard let pushRoute else { selected = connection; return }
+        let token = UUID()
+        let actions = actions
+        let snapshot = snapshot
+        HakoViewRouteRegistry.set(token, ownership: .oneShot, onReturn: {}) {
+            AnyView(HakoActivityMacConnectionDetail(
+                connection: connection, title: "Request Details", palette: palette
+            ) { text in
+                Task { @MainActor in
+                    try? await actions.perform(.activity(.copyText(text)), allowedBy: snapshot)
+                }
+            })
+        }
+        pushRoute(HakoViewRoute(id: token))
+    }
+#endif
 
      
     @State private var projection = HakoActivityProjectionMemo()
@@ -847,111 +1194,86 @@ public struct HakoLogsView<Icon: View>: View {
         }
          
         .hakoActivityLensToolbar(active: isShown) { toolbarContent }
+         
+         
+         
+         
+         
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("logs.overview")
     }
 
+     
+     
+     
+     
+     
     @ViewBuilder
     private var listBody: some View {
-        ScrollViewReader { proxy in
-            List {
-                if !severities.isEmpty {
-                    Section("Filters") {
-                        ScrollView(
-                            .horizontal,
-                            showsIndicators: false
-                        ) {
-                            HStack(
-                                spacing:
-                                    HakoTheme.Spacing.compact
-                            ) {
-                                ForEach(
-                                    severities.sorted {
-                                        $0.title < $1.title
-                                    }
-                                ) { severity in
-                                    HakoActivityKeywordButton(
-                                        title: .copy(severity.title)
-                                    ) {
-                                        severities.remove(
-                                            severity
-                                        )
-                                    }
-                                }
+        VStack(spacing: 0) {
+             
+             
+             
+             
+            if !shownSeverities.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: HakoTheme.Spacing.compact) {
+                        ForEach(shownSeverities.sorted { $0.title < $1.title }) { severity in
+                            HakoActivityKeywordButton(title: .copy(severity.title)) {
+                                 
+                                 
+                                 
+                                severities.removeAll()
+                                _ = severity
                             }
                         }
                     }
+                    .padding(.horizontal, HakoTheme.Spacing.standard)
+                    .padding(.vertical, HakoTheme.Spacing.compact)
                 }
+                .accessibilityIdentifier("logs.filters")
+            }
 
-                if entries.isEmpty {
+            if entries.isEmpty {
+                List {
                     HakoCardSurface(
                         fill: palette.card,
                         separator: palette.separator,
-                        cornerRadius:
-                            HakoTheme.Radius.groupedSection
+                        cornerRadius: HakoTheme.Radius.groupedSection
                     ) {
                         HakoEmptyState(
                             title: logEmptyTitle,
                             message: logEmptyMessage,
-                            isLoading:
-                                snapshot.activity.phase
-                                    == .loading
+                            isLoading: snapshot.activity.phase == .loading
                         ) {
                             icon(
-                                query.isEmpty
-                                    && severities.isEmpty
+                                query.isEmpty && severities.isEmpty
                                     ? .textAlignleft
                                     : .magnifyingglass
                             )
                         }
-                        .padding(
-                            .vertical,
-                            HakoTheme.Spacing.section
-                        )
+                        .padding(.vertical, HakoTheme.Spacing.section)
                     }
                     .listRowBackground(Color.clear)
                 }
-
-                ForEach(entries) { entry in
-                    HakoActivityLogRow(
-                        entry: entry,
-                        palette: palette,
-                        onSeverity: {
-                            severities.insert($0)
-                        },
-                        onCopy: {
-                            send(.copyText(entry.message))
-                        }
-                    )
-                    .id(entry.id)
-                }
+                .hakoGroupedList()
+            } else {
+                HakoLogTextView(entries: entries, followsEnd: autoScrollToEnd)
             }
-            .hakoGroupedList()
-            .hakoActivityListCanvas(palette.canvas)
-             
-             
-             
-             
-            .onChange(of: snapshot.activity.logLines.last) { _ in
-                guard autoScrollToEnd, let lastID = entries.last?.id else {
-                    return
-                }
-                withAnimation {
-                    proxy.scrollTo(lastID, anchor: .bottom)
-                }
-            }
-             
-             
-             
-             
-            .onChange(of: severities) { severities in
-                send(
-                    .setLogSeverityFilter(
-                        HakoActivityLogSeverity.allCases
-                            .filter(severities.contains)
-                            .map(\.rawValue)
-                    )
+        }
+        .hakoActivityListCanvas(palette.canvas)
+         
+         
+         
+         
+        .onChange(of: severities) { severities in
+            send(
+                .setLogSeverityFilter(
+                    HakoActivityLogSeverity.allCases
+                        .filter(severities.contains)
+                        .map(\.rawValue)
                 )
-            }
+            )
         }
     }
 
@@ -960,11 +1282,20 @@ public struct HakoLogsView<Icon: View>: View {
      
     @State private var projection = HakoActivityProjectionMemo()
 
+     
+     
+     
+    private var shownSeverities: Set<HakoActivityLogSeverity> {
+        HakoActivityLogSeverity.expandedSeverities(from: severities)
+    }
+
     private var entries: [HakoActivityLogEntry] {
         projection.logs(
             snapshot.activity.logLines,
             query: query,
-            severities: severities
+            severities: HakoActivityLogSeverity.expandedSeverities(
+                from: severities
+            )
         )
     }
 
@@ -1077,49 +1408,70 @@ public struct HakoLogsView<Icon: View>: View {
         Menu {
              
              
+             
+             
+             
+             
+             
+             
             Button {
                 severities.removeAll()
             } label: {
-                Label(
-                    "All",
-                    systemImage: severities.isEmpty
-                        ? HakoSymbol.checkmark.rawValue
-                        : HakoSymbol.circle.rawValue
-                )
+                if severities.isEmpty {
+                    Label("All", systemImage: HakoSymbol.checkmark.rawValue)
+                } else {
+                    Text(hako: .copy("All"))
+                }
             }
 
             Divider()
 
             ForEach(HakoActivityLogSeverity.allCases) { severity in
                 Button {
-                    if severities.contains(severity) {
-                        severities.remove(severity)
-                    } else {
-                        severities.insert(severity)
-                    }
-                     
-                     
-                     
-                    if severities.count
-                        == HakoActivityLogSeverity.allCases.count {
+                    if severities == [severity] {
                         severities.removeAll()
+                    } else {
+                        severities = [severity]
                     }
                 } label: {
-                    Label(
-                        severity.title,
-                        systemImage: severities.contains(severity)
-                            ? HakoSymbol.checkmark.rawValue
-                            : HakoSymbol.circle.rawValue
-                    )
+                    let isSelected = severities.contains(severity)
+                     
+                     
+                     
+                     
+                     
+                     
+                     
+                    if isSelected {
+                        Label(severity.title, systemImage: HakoSymbol.checkmark.rawValue)
+                    } else {
+                        Text(hako: .copy(severity.title))
+                    }
                 }
             }
+
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
         } label: {
              
              
+             
+             
+             
+             
             Label(
-                severities.isEmpty
+                shownSeverities.isEmpty
                     ? "Levels"
-                    : "Levels · \(severities.count)",
+                    : "Levels · \(shownSeverities.count)",
                 systemImage: HakoSymbol.line3HorizontalDecrease.rawValue
             )
         }
@@ -1154,6 +1506,149 @@ private extension View {
     }
 }
 
+ 
+ 
+ 
+enum HakoActivityRowColumns {
+    static let dot: CGFloat = 8
+    static let proxy: CGFloat = 116
+    static let network: CGFloat = 64
+    static let bytes: CGFloat = 76
+     
+    static let time: CGFloat = 90
+     
+     
+     
+    static let minimumRegularWidth: CGFloat = 720
+    static let action: CGFloat = 24
+    static let spacing: CGFloat = 10
+}
+
+private struct HakoActivityWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+extension View {
+     
+     
+    func hakoActivityMeasuresWidth(_ width: Binding<CGFloat>) -> some View {
+        background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: HakoActivityWidthKey.self, value: proxy.size.width.rounded())
+            }
+        )
+        .onPreferenceChange(HakoActivityWidthKey.self) { value in
+            if width.wrappedValue != value { width.wrappedValue = value }
+        }
+    }
+}
+
+ 
+ 
+struct HakoActivityColumnHeader: View {
+    let showsAction: Bool
+
+    var body: some View {
+        HStack(spacing: HakoActivityRowColumns.spacing) {
+            Color.clear.frame(width: HakoActivityRowColumns.dot)
+            Text("Host").frame(maxWidth: .infinity, alignment: .leading)
+            Text("Rule").frame(maxWidth: .infinity, alignment: .leading)
+            Text("Proxy").frame(width: HakoActivityRowColumns.proxy, alignment: .leading)
+            Text("Protocol").frame(width: HakoActivityRowColumns.network, alignment: .leading)
+            Text("Download").frame(width: HakoActivityRowColumns.bytes, alignment: .trailing)
+            Text("Upload").frame(width: HakoActivityRowColumns.bytes, alignment: .trailing)
+            Text("Time").frame(width: HakoActivityRowColumns.time, alignment: .leading)
+            if showsAction {
+                Color.clear.frame(width: HakoActivityRowColumns.action)
+            }
+        }
+        .modifier(HakoActivityColumnTitleStyle())
+        .accessibilityHidden(true)
+    }
+}
+
+ 
+ 
+struct HakoActivityColumnTitleStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+             
+            .textCase(nil)
+    }
+}
+
+ 
+private struct HakoActivityRuleCell: View {
+    let row: HakoActivityTableRow
+
+    var body: some View {
+        HStack(spacing: HakoTheme.Spacing.tight) {
+            if !row.connection.rule.isEmpty {
+                HakoActivityBadge(text: row.ruleKind, badge: .ruleKind)
+            }
+            if !row.connection.rulePayload.isEmpty {
+                Text(verbatim: row.connection.rulePayload)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+    }
+}
+
+ 
+ 
+private struct HakoActivityProxyCell: View {
+    let row: HakoActivityTableRow
+    let onKeyword: (String) -> Void
+
+    var body: some View {
+        if row.isRejected {
+            HakoActivityBadge(text: row.proxy, badge: .refused)
+        } else if row.connection.chains.isEmpty {
+             
+             
+            Text(verbatim: row.proxy)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        } else if !row.proxy.isEmpty {
+            Button {
+                onKeyword(row.proxy)
+            } label: {
+                 
+                 
+                 
+                Text(verbatim: row.proxy)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(hako: .format("Filter by %@", [row.proxy])))
+        }
+    }
+}
+
+ 
+ 
+private struct HakoActivityStatusDot: View {
+    let isLive: Bool
+
+    var body: some View {
+        Circle()
+            .fill(isLive ? Color.orange : Color.secondary.opacity(0.5))
+            .frame(width: 7, height: 7)
+            .frame(width: HakoActivityRowColumns.dot)
+            .accessibilityLabel(isLive ? Text("Live") : Text("Closed"))
+    }
+}
+
 private struct HakoActivityConnectionRow: View {
     let connection: HakoActivityConnectionSnapshot
     let text: HakoActivityRowText
@@ -1164,133 +1659,143 @@ private struct HakoActivityConnectionRow: View {
     let showsCloseAction: Bool
     let isCloseDisabled: Bool
     let palette: HakoProductPalette
+     
+    let isRegular: Bool
     let onKeyword: (String) -> Void
     let onClose: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: HakoTheme.Spacing.row) {
-            VStack(
-                alignment: .leading,
-                spacing: HakoTheme.Spacing.tight
-            ) {
+        let row = HakoActivityTableRow(connection: connection)
+        let network = HakoActivityTableColumn.network.badge(of: row)
+        if isRegular {
+            HStack(spacing: HakoActivityRowColumns.spacing) {
+                HakoActivityStatusDot(isLive: true)
                 HakoActivityInspectLink(
                     connection: connection,
                     title: detailTitle,
                     actions: actions,
                     snapshot: snapshot
                 ) {
-                    HStack(
-                        alignment: .firstTextBaseline,
-                        spacing: HakoTheme.Spacing.compact
-                    ) {
-                        Text(connection.destination)
-                            .font(.body.weight(.medium))
-                            .lineLimit(2)
-                        Spacer(minLength: HakoTheme.Spacing.tight)
-                        if !connection.network.isEmpty {
-                            HakoStatusBadge(
-                                title: connection.network,
-                                tint: .cyan,
-                                role: .category,
-                                categoryFill: palette.raisedFill,
-                                requirementFill: palette.raisedFill,
-                                separator: palette.separator
-                            )
+                    Text(verbatim: text.host)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                HakoActivityRuleCell(row: row)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HakoActivityProxyCell(row: row, onKeyword: onKeyword)
+                    .frame(width: HakoActivityRowColumns.proxy, alignment: .leading)
+                Group {
+                    if let network {
+                        HakoActivityBadge(text: row.trafficProtocol.label, badge: network)
+                    }
+                }
+                .frame(width: HakoActivityRowColumns.network, alignment: .leading)
+                Group {
+                    Text(verbatim: text.download)
+                        .frame(width: HakoActivityRowColumns.bytes, alignment: .trailing)
+                    Text(verbatim: text.upload)
+                        .frame(width: HakoActivityRowColumns.bytes, alignment: .trailing)
+                    Text(verbatim: text.time ?? "")
+                        .frame(width: HakoActivityRowColumns.time, alignment: .leading)
+                }
+                .font(.subheadline.monospacedDigit())
+                .lineLimit(1)
+                if showsCloseAction || isBusy {
+                    closeControl
+                        .frame(width: HakoActivityRowColumns.action)
+                }
+            }
+            .font(.subheadline)
+            .accessibilityElement(children: .contain)
+        } else {
+             
+             
+             
+             
+            VStack(alignment: .leading, spacing: 3) {
+                HakoActivityInspectLink(
+                    connection: connection,
+                    title: detailTitle,
+                    actions: actions,
+                    snapshot: snapshot
+                ) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if let network {
+                            HakoActivityBadge(text: row.trafficProtocol.label, badge: network)
+                        }
+                         
+                         
+                         
+                        Text(verbatim: text.host)
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        if isBusy {
+                            ProgressView()
+                                .controlSize(.mini)
                         }
                     }
                 }
-
-                if let from = text.from {
-                    Text(verbatim: from)
-                        .font(.caption)
+                 
+                 
+                 
+                 
+                 
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    HakoActivityRuleCell(row: row)
+                        .layoutPriority(2)
+                    HakoActivityProxyCell(row: row, onKeyword: onKeyword)
+                    Spacer(minLength: 4)
+                    Text(verbatim: text.traffic)
+                        .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .fixedSize()
+                        .layoutPriority(3)
                 }
-
-                if !connection.process.isEmpty
-                    || !connection.chains.isEmpty
-                {
-                    ScrollView(
-                        .horizontal,
-                        showsIndicators: false
-                    ) {
-                        HStack(
-                            spacing: HakoTheme.Spacing.compact
-                        ) {
-                            if !connection.process.isEmpty {
-                                HakoActivityKeywordButton(
-                                    title: .verbatim(connection.process)
-                                ) {
-                                    onKeyword(
-                                        connection.process
-                                    )
-                                }
-                            }
-                            ForEach(
-                                Array(
-                                    connection.chains
-                                        .enumerated()
-                                ),
-                                id: \.offset
-                            ) { _, chain in
-                                HakoActivityKeywordButton(
-                                    title: .verbatim(chain)
-                                ) {
-                                    onKeyword(chain)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                let detail = [
-                    connection.chains.isEmpty ? connection.route : "",
-                    connection.rule,
-                ]
-                .filter { !$0.isEmpty }
-                .joined(separator: " · ")
-                if !detail.isEmpty {
-                    Text(hako: .copy(detail))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-
-                Text(verbatim: text.traffic)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
             }
-
-            Spacer()
-
-            if isBusy {
-                ProgressView()
-                    .controlSize(.small)
-            } else if showsCloseAction {
-                Button(
-                    role: .destructive,
-                    action: onClose
-                ) {
-                    Image(
-                        systemName:
-                            HakoSymbol.xmarkCircle.rawValue
-                    )
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .contain)
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                if showsCloseAction && !isCloseDisabled {
+                    closeButton
                 }
-                .buttonStyle(.borderless)
-                .disabled(isCloseDisabled)
-                .accessibilityLabel("Close connection")
+            }
+            .contextMenu {
+                if showsCloseAction && !isCloseDisabled {
+                    closeButton
+                }
             }
         }
-        .padding(.vertical, HakoTheme.Spacing.tight)
-        .accessibilityElement(children: .contain)
+    }
+
+    private var closeButton: some View {
+        Button(role: .destructive, action: onClose) {
+            Label("Close connection", systemImage: HakoSymbol.xmarkCircle.rawValue)
+        }
+    }
+
+    @ViewBuilder
+    private var closeControl: some View {
+        if isBusy {
+            ProgressView()
+                .controlSize(.small)
+        } else if showsCloseAction {
+            Button(
+                role: .destructive,
+                action: onClose
+            ) {
+                Image(
+                    systemName:
+                        HakoSymbol.xmarkCircle.rawValue
+                )
+            }
+            .buttonStyle(.borderless)
+            .disabled(isCloseDisabled)
+            .accessibilityLabel("Close connection")
+        }
     }
 }
 
@@ -1301,187 +1806,93 @@ private struct HakoActivityRequestRow: View {
     let actions: AppleClientActions
     let snapshot: AppleClientSnapshot
     let palette: HakoProductPalette
+     
+    let isRegular: Bool
     let onKeyword: (String) -> Void
 
     var body: some View {
         let connection = entry.connection
-        VStack(
-            alignment: .leading,
-            spacing: HakoTheme.Spacing.compact
-        ) {
-            HakoActivityInspectLink(
-                connection: connection,
-                title: detailTitle,
-                actions: actions,
-                snapshot: snapshot
-            ) {
-                HStack(
-                    alignment: .firstTextBaseline,
-                    spacing: HakoTheme.Spacing.compact
+        let row = HakoActivityTableRow(request: entry)
+        let network = HakoActivityTableColumn.network.badge(of: row)
+        if isRegular {
+            HStack(spacing: HakoActivityRowColumns.spacing) {
+                HakoActivityStatusDot(isLive: entry.isActive)
+                HakoActivityInspectLink(
+                    connection: connection,
+                    title: detailTitle,
+                    actions: actions,
+                    snapshot: snapshot
                 ) {
-                    Text(connection.destination)
-                        .font(.body.weight(.medium))
-                        .lineLimit(2)
-                    Spacer(minLength: HakoTheme.Spacing.compact)
-                    HakoStatusBadge(
-                        title: entry.isActive ? "Live" : "Closed",
-                        tint: entry.isActive ? .green : .secondary,
-                        categoryFill: palette.raisedFill,
-                        requirementFill: palette.raisedFill,
-                        separator: palette.separator
-                    )
+                    Text(verbatim: text.host)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-            }
-
-            HStack(spacing: HakoTheme.Spacing.compact) {
-                if !connection.network.isEmpty {
-                    HakoStatusBadge(
-                        title: connection.network,
-                        tint: .cyan,
-                        role: .category,
-                        categoryFill: palette.raisedFill,
-                        requirementFill: palette.raisedFill,
-                        separator: palette.separator
-                    )
-                }
-                let detail = [
-                    connection.rule,
-                    connection.route,
-                ]
-                .filter { !$0.isEmpty }
-                .joined(separator: " · ")
-                if !detail.isEmpty {
-                    Text(hako: .copy(detail)).lineLimit(2)
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            if !connection.process.isEmpty
-                || !connection.chains.isEmpty
-            {
-                ScrollView(
-                    .horizontal,
-                    showsIndicators: false
-                ) {
-                    HStack(
-                        spacing: HakoTheme.Spacing.compact
-                    ) {
-                        if !connection.process.isEmpty {
-                            HakoActivityKeywordButton(
-                                title: .verbatim(connection.process)
-                            ) {
-                                onKeyword(connection.process)
-                            }
-                        }
-                        ForEach(
-                            Array(
-                                connection.chains.enumerated()
-                            ),
-                            id: \.offset
-                        ) { _, chain in
-                            HakoActivityKeywordButton(
-                                title: .verbatim(chain)
-                            ) {
-                                onKeyword(chain)
-                            }
-                        }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                HakoActivityRuleCell(row: row)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HakoActivityProxyCell(row: row, onKeyword: onKeyword)
+                    .frame(width: HakoActivityRowColumns.proxy, alignment: .leading)
+                Group {
+                    if let network {
+                        HakoActivityBadge(text: row.trafficProtocol.label, badge: network)
                     }
                 }
-            }
-
-            HStack(
-                alignment: .firstTextBaseline,
-                spacing: HakoTheme.Spacing.compact
-            ) {
-                Text(verbatim: text.lastSeen ?? "")
-                Spacer(minLength: HakoTheme.Spacing.compact)
-                Text(verbatim: text.traffic)
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, HakoTheme.Spacing.compact)
-
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct HakoActivityLogRow: View {
-    let entry: HakoActivityLogEntry
-    let palette: HakoProductPalette
-    let onSeverity: (HakoActivityLogSeverity) -> Void
-    let onCopy: () -> Void
-
-    var body: some View {
-        VStack(
-            alignment: .leading,
-            spacing: HakoTheme.Spacing.compact
-        ) {
-             
-             
-             
-             
-             
-             
-            Text(entry.message)
-                .font(
-                    .system(
-                        .caption,
-                        design: .monospaced
-                    )
-                )
-                .fixedSize(
-                    horizontal: false,
-                    vertical: true
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let severity = entry.severity {
-                Button {
-                    onSeverity(severity)
-                } label: {
-                    HakoStatusBadge(
-                        title: severity.title,
-                        tint: tint(for: severity),
-                        categoryFill: palette.raisedFill,
-                        requirementFill: palette.raisedFill,
-                        separator: palette.separator
-                    )
+                .frame(width: HakoActivityRowColumns.network, alignment: .leading)
+                Group {
+                    Text(verbatim: text.download)
+                        .frame(width: HakoActivityRowColumns.bytes, alignment: .trailing)
+                    Text(verbatim: text.upload)
+                        .frame(width: HakoActivityRowColumns.bytes, alignment: .trailing)
+                    Text(verbatim: text.time ?? "")
+                        .frame(width: HakoActivityRowColumns.time, alignment: .leading)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(
-                    Text(hako: .format("Filter by %@", [severity.title]))
-                )
+                .font(.subheadline.monospacedDigit())
+                .lineLimit(1)
             }
-        }
-        .padding(.vertical, HakoTheme.Spacing.tight)
-        .contextMenu {
+            .font(.subheadline)
+            .accessibilityElement(children: .combine)
+        } else {
              
-             
-             
-             
-            Button {
-                onCopy()
-            } label: {
-                Label("Copy", systemImage: HakoSymbol.docOnDoc.rawValue)
+            VStack(alignment: .leading, spacing: 3) {
+                HakoActivityInspectLink(
+                    connection: connection,
+                    title: detailTitle,
+                    actions: actions,
+                    snapshot: snapshot
+                ) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        HakoActivityStatusDot(isLive: entry.isActive)
+                        if let network {
+                            HakoActivityBadge(text: row.trafficProtocol.label, badge: network)
+                        }
+                         
+                        Text(verbatim: text.host)
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+                }
+                 
+                 
+                 
+                 
+                 
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    HakoActivityRuleCell(row: row)
+                        .layoutPriority(2)
+                    HakoActivityProxyCell(row: row, onKeyword: onKeyword)
+                    Spacer(minLength: 4)
+                    Text(verbatim: text.traffic)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .layoutPriority(3)
+                }
             }
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private func tint(
-        for severity: HakoActivityLogSeverity
-    ) -> Color {
-        switch severity {
-        case .debug:
-            .purple
-        case .info:
-            .blue
-        case .warning:
-            .orange
-        case .error:
-            .red
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .combine)
         }
     }
 }

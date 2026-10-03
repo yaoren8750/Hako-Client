@@ -344,8 +344,7 @@ struct ProfileProviderDefinitionsView: View {
             isDirty: draft?.hasUnsavedChanges == true,
             isBusy: isSaving,
             save: { completion in
-                persist()
-                completion(true)
+                completion(commit())
             },
              
              
@@ -522,16 +521,25 @@ struct ProfileProviderDefinitionsView: View {
         }
     }
 
-    private func persist() {
-        guard let value = draft else { return }
+     
+     
+     
+     
+     
+    private func persist() { if commit() { closePage() } }
+
+    @discardableResult
+    private func commit() -> Bool {
+        guard let value = draft else { return false }
         isSaving = true
         defer { isSaving = false }
         do {
             try save(value)
-            closePage()
+            return true
         } catch {
             errorMessage = error.localizedDescription
         }
+        return false
     }
 
     private func transportTitle(_ transport: ProfileProviderTransport) -> String {
@@ -690,8 +698,7 @@ private struct ProfileProviderDefinitionEditorView: View {
         .hakoRegistersDeparture(
             isDirty: draft.hasUnsavedChanges,
             save: { completion in
-                persist()
-                completion(true)
+                completion(commit())
             },
             discard: {}
         )
@@ -942,7 +949,7 @@ private struct ProfileProviderDefinitionEditorView: View {
             } header: {
                 Text("Inline Content")
             } footer: {
-                Text("Inline content belongs to this profile overlay and survives subscription refresh without changing the imported source.")
+                Text("Inline content belongs to this profile overlay and survives profile URL refresh without changing the imported source.")
             }
         }
     }
@@ -1197,7 +1204,15 @@ private struct ProfileProviderDefinitionEditorView: View {
         }
     }
 
-    private func persist() {
+     
+     
+     
+     
+     
+    private func persist() { if commit() { (modalDismiss ?? { dismiss() })() } }
+
+    @discardableResult
+    private func commit() -> Bool {
         do {
              
              
@@ -1214,10 +1229,11 @@ private struct ProfileProviderDefinitionEditorView: View {
                 definitionJSON: definition,
                 managedFile: selectedFile
             ))
-            (modalDismiss ?? { dismiss() })()
+            return true
         } catch {
             errorMessage = error.localizedDescription
         }
+        return false
     }
 }
 

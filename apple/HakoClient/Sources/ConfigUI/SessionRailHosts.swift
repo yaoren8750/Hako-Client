@@ -35,12 +35,24 @@ struct ProxiesOverviewHost: View {
     @State private var providerUpdateDeferred: HakoDisplayText?
      
     @State private var inspectingNode: ProxyNodeInspection?
+     
+     
+     
+     
+     
+     
+    @State private var offersNodeEditing = false
 
     var body: some View {
         HakoPerf.measure("proxies.host.body") {
             hosted.hakoProductModal(item: $inspectingNode, role: .form) { inspection in
                 nodeDetailSheet(for: inspection)
             }
+        }
+        .task(id: profile.id) {
+            offersNodeEditing = ProxyNodeEditPolicy.isEditable(
+                hasStoredSource: profiles.sourceYAML(for: profile) != nil
+            )
         }
 
 
@@ -61,7 +73,10 @@ struct ProxiesOverviewHost: View {
     @ViewBuilder
     private var hosted: some View {
         ProxiesOverviewAdapter(
-            sourceModel: sourceModel,
+             
+             
+             
+            sourceModel: command.tunnelIsUp ? sourceModel.withoutCatalogRefusal : sourceModel,
              
              
              
@@ -85,11 +100,14 @@ struct ProxiesOverviewHost: View {
             ),
             runtime: ProxiesRuntimeFacts(
                 delays: nodes.delays,
+                endpointDelays: nodes.endpointDelays,
+                defaultDelayTestURL: nodes.defaultDelayTestURL,
                 failureReasons: nodes.failureReasons,
                  
                  
                 nowByGroup: nodes.nowByGroup,
                 resolvedNowByGroup: nodes.resolvedNowByGroup,
+                fixedByGroup: nodes.fixedByGroup,
                 catalog: nodes.groups,
                 runtimeNodes: nodes.runtimeProxies,
                 providerCatalog: nodes.runtimeProviderCatalog,
@@ -223,10 +241,22 @@ struct ProxiesOverviewHost: View {
             },
              
             actionRefusals: nodes.actionRefusals,
-            testMember: { name in Task { await nodes.test(name) } },
+            testMember: { name, group in Task { await nodes.test(name, inGroup: group) } },
+             
+             
+             
+             
+             
+            editMember: offersNodeEditing
+                ? { name in inspectingNode = ProxyNodeInspection(name: name) }
+                : nil,
             inspectMember: { name in inspectingNode = ProxyNodeInspection(name: name) },
             initiallyExpandedGroup: initiallyExpandedGroup,
             rememberedExpandedGroups: nodes.unfoldedGroups,
+             
+             
+            rememberedOpenGroup: nodes.currentGroupName,
+            readerFoldedAll: nodes.readerFoldedAllGroups,
             ownsNavigationContainer: ownsNavigationContainer
         )
         .alert(
@@ -272,13 +302,21 @@ struct RulesOverviewHost: View {
      
      
     @State private var compileVerdicts = ProviderCompileVerdicts()
+     
+     
+     
+     
+     
+     
+     
+    @State private var presentedYAML: String?
 
     var body: some View {
          
          
          
         RulesOverviewAdapter(
-            sourceYAML: profiles.uiProjectedYAML(for: profile),
+            sourceYAML: presentedYAML ?? profiles.uiProjectedYAML(for: profile),
             canInspectActiveRules: canInspectActiveRules,
             compileVerdicts: compileVerdicts,
             openProxiesGroup: openProxiesGroup,
@@ -297,30 +335,29 @@ struct RulesOverviewHost: View {
          
          
          
+        .task(id: "\(profile.id)#\(profile.activeRevision ?? "")#\(profile.selectedScriptID ?? "")#presented") {
+            presentedYAML = await profiles.loadPresentedProxiesYAML(for: profile)
+        }
         .task(id: "\(profile.id)#\(profile.activeRevision ?? "")#\(canInspectActiveRules)") {
              
              
              
              
-            guard profiles.activeProfileID == profile.id,
-                  let container = HakoAppIdentifiers.appGroupContainer else {
-                compileVerdicts = ProviderCompileVerdicts()
-                return
-            }
-            let coreHome = container.appendingPathComponent("working")
-            var verdicts = await Task.detached(priority: .utility) {
-                ProviderCompileVerdicts.load(coreHome: coreHome)
+             
+             
+             
+             
+            let isActive = profiles.activeProfileID == profile.id
+            let profileID = profile.id
+            let coreHome = HakoAppIdentifiers.appGroupContainer?.appendingPathComponent("working")
+            compileVerdicts = await Task.detached(priority: .utility) {
+                var verdicts = isActive
+                    ? coreHome.map { ProviderCompileVerdicts.load(coreHome: $0) } ?? ProviderCompileVerdicts()
+                    : ProviderCompileVerdicts()
+                verdicts.entryCounts = OfflineProxyCatalogLoader.input(preferredProfileID: profileID)
+                    .map(OfflineProxyCatalogLoader.ruleSetCounts) ?? [:]
+                return verdicts
             }.value
-             
-             
-             
-            if command.isConnected,
-               let catalog = try? await command.providerRuntimeCatalog() {
-                for (name, provider) in catalog.ruleProviders {
-                    verdicts.entryCounts[name] = provider.ruleCount
-                }
-            }
-            compileVerdicts = verdicts
         }
     }
 }
@@ -404,10 +441,14 @@ struct SessionProxiesRailRoot: View {
                 ),
                       let cached = ProxiesRailPreparationCache.shared.value(
                           for: profile.id
-                      ),
-                       
-                      cached.sourceYAML == profiles.cachedUIProjectedYAML(for: profile)
+                      )
                 else { return nil }
+                 
+                 
+                 
+                 
+                 
+                 
                 return (cached.model, cached.profileID)
             }
         if let restored {
@@ -472,6 +513,9 @@ struct SessionProxiesRailRoot: View {
                     in: profiles
                 )?.id,
                 refreshToken: profileRefreshToken,
+                scriptID: HomeProfileResolution.workingProfile(
+                    in: profiles
+                )?.selectedScriptID,
                 overrides: HomeProfileResolution.workingProfile(
                     in: profiles
                 )?.proxyNodeOverrides
@@ -532,6 +576,9 @@ struct SessionProxiesRailRoot: View {
         let refreshToken: Int
          
          
+        let scriptID: String?
+         
+         
          
          
          
@@ -552,10 +599,15 @@ struct SessionProxiesRailRoot: View {
         }
          
          
-        let cachedSource = profiles.cachedUIProjectedYAML(for: profile)
-        let projectionInputs = cachedSource == nil
-            ? profiles.uiProjectionInputs(for: profile)
-            : nil
+         
+         
+         
+         
+         
+         
+         
+         
+        let presentedSource = await profiles.loadPresentedProxiesYAML(for: profile)
         let selectedMap = profile.selectedMap
          
          
@@ -570,6 +622,11 @@ struct SessionProxiesRailRoot: View {
          
          
          
+        let asksKernel = !avoidsStore && !command.isConnected && !command.tunnelIsUp
+        let drawnProfileID = profile.id
+         
+         
+         
          
         let comparison = cached.map {
             (
@@ -580,11 +637,7 @@ struct SessionProxiesRailRoot: View {
         let handle = Task.detached(
             priority: .userInitiated
         ) { () -> (ProxiesRailPreparation, String?)? in
-            let sourceYAML: String? = cachedSource ?? projectionInputs.flatMap {
-                CustomNodesGroupMaterializer.projectForUI(
-                    sourceYAML: $0.sourceYAML, profile: profile
-                )
-            }
+            let sourceYAML: String? = presentedSource
             var providersDir: URL?
             if !avoidsStore,
                let container = HakoAppIdentifiers.appGroupContainer,
@@ -608,10 +661,15 @@ struct SessionProxiesRailRoot: View {
             let catalog = providersDir.flatMap {
                 ProviderCatalog.load(providersDir: $0)
             }
+             
+             
+            let catalogInput = asksKernel
+                ? OfflineProxyCatalogLoader.input(preferredProfileID: drawnProfileID)
+                : nil
             let fingerprint = ProxiesProviderFingerprint.of(
                 directory: providersDir,
                 catalog: catalog
-            )
+            ) + "|" + (catalogInput?.fingerprint ?? "-")
             if let comparison,
                comparison.sourceYAML == sourceYAML,
                comparison.fingerprint == fingerprint {
@@ -642,7 +700,8 @@ struct SessionProxiesRailRoot: View {
                                 map[entry.name] = failure
                             }
                         }
-                ),
+                 
+                ).resolvedWithKernelCatalog(input: catalogInput),
                 fingerprint: fingerprint
             ), sourceYAML)
         }
@@ -656,11 +715,6 @@ struct SessionProxiesRailRoot: View {
         }
         guard !Task.isCancelled, let (outcome, sourceYAML) = result else {
             return
-        }
-        if cachedSource == nil, let projectionInputs {
-            profiles.rememberUIProjectedYAML(
-                sourceYAML, key: projectionInputs.key, for: profile
-            )
         }
         switch outcome {
         case .unchanged:

@@ -283,6 +283,11 @@ public struct HakoActivitySnapshot: Codable, Equatable, Sendable {
      
      
     public let logSeverityFilter: [String]
+     
+    public let activeProfileLogLevel: String?
+     
+     
+    public let logLevelDirective: String?
 
     public init(
         phase: HakoActivityPhase,
@@ -303,7 +308,9 @@ public struct HakoActivitySnapshot: Codable, Equatable, Sendable {
         logRetentionOptions: [HakoLogRetentionOption] = [],
         logRetention: String? = nil,
         logRetentionSummary: String? = nil,
-        logSeverityFilter: [String] = []
+        logSeverityFilter: [String] = [],
+        activeProfileLogLevel: String? = nil,
+        logLevelDirective: String? = nil
     ) {
         self.phase = phase
         self.activeConnectionCount = max(0, activeConnectionCount)
@@ -335,6 +342,8 @@ public struct HakoActivitySnapshot: Codable, Equatable, Sendable {
         self.logRetention = logRetention
         self.logRetentionSummary = logRetentionSummary
         self.logSeverityFilter = logSeverityFilter
+        self.activeProfileLogLevel = activeProfileLogLevel
+        self.logLevelDirective = logLevelDirective
     }
 
     public static let disconnected = Self(phase: .disconnected)
@@ -385,8 +394,13 @@ public struct AppleClientHomeSnapshot: Codable, Equatable, Sendable {
     public let rules: HakoHomeDomainSnapshot
     public let egress: HakoHomeEgressSnapshot
     public let lanAddress: String?
-    public let adjustments: [HakoHomeAdjustmentSnapshot]
     public let isProfileActionInFlight: Bool
+     
+     
+     
+     
+     
+    public let selectedProfileIsSystemFallback: Bool
 
     public init(
         routing: AppleClientRoutingSnapshot = AppleClientRoutingSnapshot(mode: .rule),
@@ -402,11 +416,8 @@ public struct AppleClientHomeSnapshot: Codable, Equatable, Sendable {
         rules: HakoHomeDomainSnapshot = .empty,
         egress: HakoHomeEgressSnapshot = .unavailable,
         lanAddress: String? = nil,
-        adjustments: [HakoHomeAdjustmentSnapshot] =
-            HakoHomeAdjustmentModule.allCases.map {
-                HakoHomeAdjustmentSnapshot(module: $0)
-            },
-        isProfileActionInFlight: Bool = false
+        isProfileActionInFlight: Bool = false,
+        selectedProfileIsSystemFallback: Bool = false
     ) {
         self.routing = routing
         self.traffic = traffic
@@ -421,14 +432,8 @@ public struct AppleClientHomeSnapshot: Codable, Equatable, Sendable {
         self.rules = rules
         self.egress = egress
         self.lanAddress = lanAddress.map { String($0.prefix(128)) }
-        let summaries = Dictionary(
-            adjustments.map { ($0.module, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        self.adjustments = HakoHomeAdjustmentModule.allCases.map {
-            summaries[$0] ?? HakoHomeAdjustmentSnapshot(module: $0)
-        }
         self.isProfileActionInFlight = isProfileActionInFlight
+        self.selectedProfileIsSystemFallback = selectedProfileIsSystemFallback
     }
 }
 

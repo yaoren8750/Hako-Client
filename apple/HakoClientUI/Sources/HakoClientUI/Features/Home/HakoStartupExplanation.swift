@@ -201,6 +201,14 @@ public extension HakoStartupExplanation {
      
      
     var summary: HakoDisplayText {
+         
+         
+         
+         
+         
+        if let failureReason, !failureReason.isEmpty {
+            return .format("Couldn’t connect: %@", [failureReason])
+        }
         guard memoryWasTheStory else {
              
             return .copy("Couldn’t connect: the tunnel stopped while starting up")
@@ -224,6 +232,12 @@ public extension HakoStartupExplanation {
      
      
     var detail: HakoDisplayText {
+        if let failureReason, !failureReason.isEmpty {
+            return .format(
+                "The tunnel’s start failed: %@. It was using %@ at the time.",
+                [failureReason, Self.megabytes(footprintBytes)]
+            )
+        }
         guard memoryWasTheStory else {
             guard let resource else {
                 return .format(
@@ -309,7 +323,7 @@ public extension HakoStartupExplanation {
             }
             if stage.hasPrefix("apply:proxy-providers") {
                 return .copy(
-                    "Most of this start’s memory went to loading the nodes from your proxy subscriptions — every subscription’s full node list loads at start. Removing subscriptions you don’t use, or narrowing one with a proxy-provider filter, lowers this step directly."
+                    "Most of this start’s memory went to loading the nodes from your profile URLs — every profile URL’s full node list loads at start. Removing profile URLs you don’t use, or narrowing one with a proxy-provider filter, lowers this step directly."
                 )
             }
             if stage.hasPrefix("parse:dns") || stage.hasPrefix("parse:rules")
@@ -357,7 +371,7 @@ public extension HakoStartupExplanation {
         }
         if resource.hasPrefix("proxy-provider:") {
             return .copy(
-                "Most of this start’s memory went to loading the nodes from your proxy subscriptions — every subscription’s full node list loads at start. Removing subscriptions you don’t use, or narrowing one with a proxy-provider filter, lowers this step directly."
+                "Most of this start’s memory went to loading the nodes from your profile URLs — every profile URL’s full node list loads at start. Removing profile URLs you don’t use, or narrowing one with a proxy-provider filter, lowers this step directly."
             )
         }
         if resource.hasPrefix("geoip:") {

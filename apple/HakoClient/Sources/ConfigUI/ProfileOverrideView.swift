@@ -15,7 +15,6 @@ struct ProfileOverrideView: View {
      
      
      
-    @State private var overrideDeviations: ConfigDeviationReport?
     let save: (Profile) -> Void
     private let settingsFacade: ProfileSettingsFacade
 
@@ -42,11 +41,30 @@ struct ProfileOverrideView: View {
     @State private var error = ""
     @State private var isConfirmingQuickFill = false
     @State private var editingRule: RuleEditTarget?
+    @State private var editingScript: ConfigScript?
+    @State private var addingScriptSheet = false
+    @State private var scriptAddress = ""
+    @State private var importingScript = false
+    @State private var showsScriptFileImporter = false
+    @State private var scriptFailure = ""
+    @State private var showsScriptFailure = false
+    @State private var deletingScript: ConfigScript?
 
     private let globalRules: [String]
-    private let scripts: [ConfigScript]
-    private let rawYAML: String?
+    @State private var scripts: [ConfigScript]
+    private let scriptLibrary: UserDefaults
+    @State private var updatingScripts = false
+    @State private var scriptsUpdateMessage = ""
+    @State private var showsScriptsUpdate = false
+     
+     
+     
+     
+    @State private var rawYAML: String?
+    private let loadRawYAML: (() async -> String?)?
+    @State private var projectionPending: Bool
     private let opensProxyChainsDirectly: Bool
+    private let configurationCenter: Bool
 
     private struct RuleEditTarget: Identifiable {
         let id = UUID()
@@ -64,13 +82,19 @@ struct ProfileOverrideView: View {
         profile: Profile,
         rawYAML: String?,
         openProxyChains: Bool = false,
+        configurationCenter: Bool = false,
+        scriptLibrary: UserDefaults = ScriptLibrary.appGroupDefaults,
+        loadRawYAML: (() async -> String?)? = nil,
         save: @escaping (Profile) -> Void
     ) {
         let settingsFacade = ProfileSettingsFacade()
         let settings = settingsFacade.snapshot(for: profile)
+        self.configurationCenter = configurationCenter
         self.profile = profile
         self.save = save
-        self.rawYAML = rawYAML
+        _rawYAML = State(initialValue: rawYAML)
+        self.loadRawYAML = loadRawYAML
+        _projectionPending = State(initialValue: rawYAML == nil && loadRawYAML != nil)
         self.settingsFacade = settingsFacade
         opensProxyChainsDirectly = openProxyChains
         _patchText = State(initialValue: Self.prettyJSON(settings.override.patchJSON))
@@ -80,7 +104,8 @@ struct ProfileOverrideView: View {
             initialValue: Set(settings.override.disabledGlobalRules ?? [])
         )
         globalRules = settings.migratedGlobalOverride?.appendRules ?? []
-        scripts = ScriptLibrary.load()
+        self.scriptLibrary = scriptLibrary
+        _scripts = State(initialValue: ScriptLibrary.load(from: scriptLibrary))
         _selectedScriptID = State(initialValue: settings.selectedScriptID)
         _mode = State(initialValue: settings.overwriteMode ?? .standard)
         _customGroups = State(initialValue: settings.customOverwrite?.proxyGroups ?? [])
@@ -110,24 +135,16 @@ struct ProfileOverrideView: View {
                 }
             } else {
             Form {
-                Section {
-                    Picker("Mode", selection: $mode) {
-                        ForEach(Profile.OverwriteMode.allCases) { mode in
-                             
-                             
-                             
-                             
-                            Text(HakoCopy.key(mode.rawValue.capitalized))
-                                .tag(mode)
-                        }
-                    }
-                    .hakoIdiomFormPickerStyle()
-                    .accessibilityIdentifier("profile.override.mode")
-                } header: {
-                    Text("Override Mode")
-                }
 
-                if mode == .standard {
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                if mode != .custom, !configurationCenter {
                     Section {
                         CodeEditorPanel(
                             text: $patchText,
@@ -137,62 +154,18 @@ struct ProfileOverrideView: View {
                         )
                     } header: {
                         Text("Patch JSON")
-                    } footer: {
-                        Text("Deep-merged into this profile's generated working copy. Use {} for no field overrides.")
                     }
 
-                    Section {
-                        ForEach(ruleRows.current(for: rules)) { row in
-                            let rule = ruleRows.index(of: row.id)
-                                .map { rules[$0] } ?? ""
-                            HakoMacDeletableRow(onDelete: {
-                                ruleRows.remove(row.id, from: &rules)
-                            }) {
-                                Button {
-                                    editingRule = RuleEditTarget(rowID: row.id, raw: rule)
-                                } label: {
-                                    Text(rule)
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(.primary)
-                                }
-                            }
-                        }
-                        .onDelete { ruleRows.removeOffsets($0, from: &rules) }
-                        .onMove { ruleRows.move(fromOffsets: $0, toOffset: $1, in: &rules) }
-                        .onAppear { ruleRows.resync(count: rules.count) }
-                        .onChange(of: rules.count) { ruleRows.resync(count: $0) }
-
-                        HakoAddRow(Text("Add Rule")) {
-                            editingRule = RuleEditTarget(rowID: nil, raw: "")
-                        } touchLabel: {
-                            Label("Add Rule", systemImage: HakoSymbol.plus.name)
-                        }
-                        Toggle("Insert before subscription rules", isOn: $prependRules)
-                            .accessibilityIdentifier("profile.override.prepend-rules")
-                    } header: {
-                        Text("Added Rules")
-                    } footer: {
-                        Text(
-                            HakoPlatformLayout.pageUsesSystemSettingsIdiom
-                                ? "Click a rule to edit it; use Edit to reorder or delete."
-                                : "Tap to edit; use Edit to reorder or delete."
-                        )
-                    }
-                } else if mode == .script {
-                    Section {
-                    Picker("Override Script", selection: $selectedScriptID) {
-                        Text("None").tag(String?.none)
-                        ForEach(scripts) { script in
-                            Text(script.label).tag(Optional(script.id))
-                        }
-                    }
-                        .accessibilityIdentifier("profile.override.script")
-                    } header: {
-                        Text("Script")
-                    } footer: {
-                        Text("The selected script transforms the full generated working copy before app-wide overrides.")
-                    }
-                } else {
+                    addedRulesSection
+                }
+                     
+                     
+                     
+                     
+                     
+                     
+                scriptSections
+                if mode == .custom {
                     Section {
                         HakoRoutedViewLink {
                             HakoLazyView {
@@ -261,13 +234,19 @@ struct ProfileOverrideView: View {
                         }
                         .accessibilityIdentifier("profile-override.quick-fill")
                         .hakoMacFormActionChrome()
+                        Button("Remove Custom Overrides", role: .destructive) {
+                            customGroups = []
+                            customRules = []
+                            mode = .standard
+                        }
+                        .accessibilityIdentifier("profile.override.custom.remove")
+                        .hakoMacFormActionChrome()
                     } header: {
-                        Text("Custom Configuration")
-                    } footer: {
-                        Text("Custom mode replaces proxy-groups and rules in the runtime copy; the source remains unchanged.")
+                        Text("Custom Overrides")
                     }
                 }
 
+                if !configurationCenter || !proxyChain.isEmpty || !legacyRelayMigrations.isEmpty {
                 Section {
                     HakoRoutedViewLink {
                         ProfileProxyChainEditor(
@@ -287,7 +266,9 @@ struct ProfileOverrideView: View {
                 } header: {
                     Text("Proxy Identity")
                 } footer: {
-                    Text("Credentials stay in the device Keychain. Chains use dialer-proxy; neither feature rewrites the downloaded source.")
+                    Text("Add chains in Node Library.")
+                }
+
                 }
 
                 if !globalRules.isEmpty {
@@ -309,36 +290,43 @@ struct ProfileOverrideView: View {
                         }
                     } header: {
                         Text("Migrated Rules")
-                    } footer: {
-                        Text(
-                            "Rules preserved for this profile during the app-wide settings migration."
-                        )
                     }
                 }
 
                 if !error.isEmpty {
                     HakoStatusMessage(text: .copy(error), kind: .error)
                 }
-
-                ConfigDeviationSection(
-                    report: overrideDeviations,
-                    fields: RunningCoreDeviations.fields(
-                        for: [.mode, .routingRules, .proxySources, .ruleSets, .advancedTrust]
-                    ),
-                    identifierPrefix: "profile-override.deviation"
-                )
+                 
+                 
+                 
+                 
             }
+            .hakoPageTitle(.copy(configurationCenter ? "Overrides and Scripts" : "Profile Override"))
+            .alert(Text(hako: .copy("Update Scripts")), isPresented: $showsScriptsUpdate) {
+                Button("OK") {}
+            } message: {
+                Text(verbatim: scriptsUpdateMessage)
+            }
+             
+             
+             
+             
+             
+             
+             
+             
             .task(id: profile.id) {
-                let profile = profile
-                overrideDeviations = await Task.detached(priority: .utility) {
-                    RunningCoreDeviations.report(
-                        profile: profile,
-                        sidecarYAML: RunningCoreDeviations.sidecarYAML(for: profile),
-                        locale: .current
-                    )
-                }.value
+                guard projectionPending, let loadRawYAML else { return }
+                let loaded = await loadRawYAML()
+                if rawYAML == nil { rawYAML = loaded }
+                projectionPending = false
             }
-            .hakoPageTitle("Profile Override")
+            .onReceive(NotificationCenter.default.publisher(for: ScriptLibrary.didChange)) { _ in
+                scripts = ScriptLibrary.load(from: scriptLibrary)
+                if let selected = selectedScriptID, !scripts.contains(where: { $0.id == selected }) {
+                    selectedScriptID = nil
+                }
+            }
              
              
              
@@ -358,23 +346,54 @@ struct ProfileOverrideView: View {
                         Button("Cancel") { dismissPresentation() }
                     }
                 }
+                 
+                 
+                 
+                 
+                ToolbarItem(placement: .hakoNavigationTrailing) {
+                     
+                     
+                     
+                    if !insideProductModal {
+                        Button { Task { await updateScripts() } } label: {
+                            Label("Update Scripts", systemImage: HakoSymbol.arrowClockwise.name)
+                        }
+                        .disabled(updatingScripts)
+                        .accessibilityIdentifier("profile.override.scripts.update")
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     if !insideProductModal {
                         HakoSaveButton { persist() }
+                            .disabled(projectionPending)
                     }
                 }
 #if !os(macOS)
                 ToolbarItem(placement: .bottomBar) {
-                    HakoEditButton()
+                     
+                     
+                     
+                    if !configurationCenter, mode != .custom, !rules.isEmpty {
+                        HakoEditButton()
+                    }
                 }
 #endif
             }
-            .hakoProductModalRoot(title: "Profile Override")
+            .hakoProductModalRoot(
+                title: configurationCenter ? "Overrides and Scripts" : "Profile Override",
+                 
+                 
+                 
+                 
+                actionTitle: "Update Scripts",
+                actionDisabled: updatingScripts,
+                action: { Task { await updateScripts() } }
+            )
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if insideProductModal {
                     HakoModalActionBar(
                         primaryTitle: "Save",
-                    primaryDisabled: !hasChanges,
+                    primaryDisabled: !hasChanges || projectionPending,
                         onPrimary: persist
                     )
                 }
@@ -392,6 +411,41 @@ struct ProfileOverrideView: View {
                 }
                 .hakoModalPresentation(.page)
             }
+             
+            .hakoProductModal(item: $editingScript, role: .page, immersive: { _ in true }) { script in
+                ScriptEditorView(script: script) { saved in
+                    ScriptLibrary.upsert(saved, in: scriptLibrary)
+                    editingScript = nil
+                }
+                .hakoModalPresentation(.page)
+            }
+            .hakoProductModal(isPresented: $addingScriptSheet, role: .page) {
+                ScriptManualPage(library: scriptLibrary, close: { addingScriptSheet = false }) { added in
+                     
+                     
+                    acceptAddedScript(added)
+                }
+                .hakoModalPresentation(.page)
+            }
+            .fileImporter(isPresented: $showsScriptFileImporter,
+                          allowedContentTypes: [.javaScript, .plainText, .text],
+                          allowsMultipleSelection: false) { outcome in
+                do { acceptAddedScript(try ScriptAddOutcome.fromFile(outcome, in: scriptLibrary)) }
+                catch { failScriptAdd((error as NSError).localizedDescription) }
+            }
+            .alert("Import Failed", isPresented: $showsScriptFailure) {
+                Button("OK") {}
+            } message: {
+                Text(verbatim: scriptFailure)
+            }
+            .hakoDeleteConfirmation(deletingScript?.label ?? "",
+                isPresented: Binding(get: { deletingScript != nil }, set: { if !$0 { deletingScript = nil } }),
+                message: .copy("These scripts will be deleted. Profiles using them must choose another script before starting."),
+                identifier: "profile.override.script.delete.confirm") { [deletingScript] in
+                    guard let deletingScript else { return }
+                    ScriptLibrary.remove(id: deletingScript.id, in: scriptLibrary)
+                    if selectedScriptID == deletingScript.id { selectedScriptID = nil }
+                }
             }
         }
         .hakoStackNavigationViewStyle()
@@ -447,6 +501,93 @@ struct ProfileOverrideView: View {
 
      
      
+     
+     
+    @ViewBuilder
+    private func scriptRow(_ script: ConfigScript) -> some View {
+        let selected = selectedScriptID == script.id
+        HStack(spacing: 0) {
+            Button {
+                 
+                 
+                selectedScriptID = selected ? nil : script.id
+            } label: {
+                HStack(alignment: .center, spacing: HakoTheme.Spacing.row) {
+                    Group {
+                        if selected {
+                            Image(systemName: HakoSymbol.checkmark.rawValue)
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(.tint)
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .frame(width: 24, height: 24)
+                    .accessibilityHidden(true)
+                    Text(verbatim: script.label)
+                        .font(.body.weight(selected ? .semibold : .regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: HakoTheme.Spacing.compact)
+                }
+                .padding(.leading, HakoTheme.Spacing.standard)
+                .padding(.vertical, HakoMacSettingsMetrics.rowVerticalInset(touch: HakoTheme.Spacing.row))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("profile.override.script.\(script.id)")
+            .accessibilityAddTraits(selected ? .isSelected : [])
+            Button {
+                editingScript = script
+            } label: {
+                Image(systemName: HakoSymbol.infoCircle.rawValue)
+                    .font(.title3)
+                    .foregroundStyle(.tint)
+                    .frame(width: HakoClientUI.HakoTheme.Control.minimumHitTarget,
+                           height: HakoClientUI.HakoTheme.Control.minimumHitTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Edit")
+            .accessibilityIdentifier("profile.override.script.edit.\(script.id)")
+            .padding(.trailing, HakoTheme.Spacing.standard)
+        }
+         
+         
+        .accessibilityElement(children: .contain)
+         
+         
+         
+        .listRowInsets(EdgeInsets())
+        .swipeActions(allowsFullSwipe: false) {
+            Button("Delete", role: .destructive) { deletingScript = script }
+                 
+                 
+                .tint(.red)
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            if !(script.sourceURL ?? "").isEmpty {
+                 
+                 
+                 
+                Button {
+                    Task { @MainActor in
+                        if let refreshed = try? await ScriptImport.refreshed(script), refreshed.body != script.body {
+                            ScriptLibrary.upsert(refreshed, in: scriptLibrary)
+                        }
+                    }
+                } label: {
+                    Label("Update", systemImage: HakoSymbol.arrowClockwise.name)
+                }
+                .tint(.blue)
+                .accessibilityIdentifier("profile.override.script.update")
+            }
+        }
+    }
+
+     
+     
     private var policyOptions: RulePolicyOptions {
         RulePolicyOptions
             .make(sourceYAML: rawYAML)
@@ -486,10 +627,216 @@ struct ProfileOverrideView: View {
         }
     }
 
+     
+     
+
+    private func importScriptLink() {
+        let address = scriptAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty, !importingScript else { return }
+        importingScript = true
+        Task { @MainActor in
+            defer { importingScript = false }
+            do { acceptAddedScript(try await ScriptAddOutcome.fromLink(address, in: scriptLibrary)) }
+            catch { failScriptAdd((error as NSError).localizedDescription) }
+        }
+    }
+
+    private func acceptAddedScript(_ script: ConfigScript) {
+        scripts = ScriptLibrary.load(from: scriptLibrary)
+        selectedScriptID = script.id
+        scriptAddress = ""
+        addingScriptSheet = false
+    }
+
+    private func failScriptAdd(_ message: String) {
+        scriptFailure = message
+        showsScriptFailure = true
+    }
+
+    @ViewBuilder
+    private var scriptSections: some View {
+         
+         
+         
+        let chosen = scripts.first { $0.id == selectedScriptID }
+        let others = scripts.filter { $0.id != selectedScriptID }
+        if let chosen {
+            Section {
+                scriptRow(chosen)
+            } header: {
+                Text("Script").accessibilityIdentifier("profile.override.scripts.selected")
+            }
+        }
+        if !others.isEmpty {
+            Section {
+                ForEach(others) { script in
+                    scriptRow(script)
+                }
+            } header: {
+                if chosen == nil {
+                     
+                     
+                     
+                    Text("Scripts")
+                } else {
+                    Text("Other Scripts").accessibilityIdentifier("profile.override.scripts.other")
+                }
+            }
+        }
+         
+         
+         
+        Section {
+            HStack(spacing: HakoTheme.Spacing.compact) {
+                TextField("", text: $scriptAddress, prompt: Text(verbatim: "https://example.com/script.js"))
+#if !os(macOS)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+#endif
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .onSubmit { importScriptLink() }
+                    .disabled(importingScript)
+                    .accessibilityIdentifier("scripts.add.link.address")
+                HakoPasteControl(style: .square) { pasted in
+                    scriptAddress = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+                    importScriptLink()
+                }
+                .disabled(importingScript)
+            }
+            if importingScript {
+                HStack(spacing: HakoTheme.Spacing.compact) {
+                    ProgressView().controlSize(.small)
+                    Text(hako: .copy("Importing…")).font(.subheadline).foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("scripts.add.status")
+            }
+             
+             
+             
+             
+            HStack(alignment: .top, spacing: HakoTheme.Spacing.compact) {
+                Button {
+                    showsScriptFileImporter = true
+                } label: {
+                    Label(HakoCopy.key("Import"), systemImage: HakoSymbol.arrowUpDocument.name)
+                }
+                .accessibilityIdentifier("profile.override.script.add.file")
+                Button {
+                    addingScriptSheet = true
+                } label: {
+                     
+                    Label(HakoCopy.key("quick-add.door.create"), systemImage: HakoSymbol.pencilLine.name)
+                }
+                .accessibilityIdentifier("profile.override.script.add")
+            }
+            .labelStyle(QuickAddDoorLabelStyle())
+            .buttonStyle(.plain)
+            .foregroundStyle(.tint)
+            .disabled(importingScript)
+            .padding(.vertical, HakoTheme.Spacing.tight)
+        } header: {
+            HakoConfigurationLibraryHeader(title: .copy("Add Script"))
+        }
+        if configurationCenter, mode != .custom, !rules.isEmpty {
+            Section {
+                HakoRoutedViewLink {
+                    HakoLazyView { exceptionsPage }
+                } label: {
+                    HakoDestinationRow(
+                        title: "This Profile's Exceptions",
+                        subtitle: .format("%@ rules", [String(rules.count)]),
+                        symbol: .listBulletRectangle,
+                        tint: .gray
+                    )
+                }
+                .accessibilityIdentifier("profile.override.exceptions")
+            }
+        }
+        if configurationCenter, mode != .custom, patchFieldCount > 0 {
+            Section {
+                HakoRoutedViewLink {
+                    HakoLazyView { patchPage }
+                } label: {
+                    HakoDestinationRow(
+                        title: "Field Patch",
+                        subtitle: .format("%@ fields", [String(patchFieldCount)]),
+                        symbol: .curlybraces,
+                        tint: .gray
+                    )
+                }
+                .accessibilityIdentifier("profile.override.patch")
+            }
+        }
+    }
+
+     
+     
+    private var addedRulesSection: some View {
+                    Section {
+                        ForEach(ruleRows.current(for: rules)) { row in
+                            let rule = ruleRows.index(of: row.id)
+                                .map { rules[$0] } ?? ""
+                            HakoMacDeletableRow(onDelete: {
+                                ruleRows.remove(row.id, from: &rules)
+                            }) {
+                                Button {
+                                    editingRule = RuleEditTarget(rowID: row.id, raw: rule)
+                                } label: {
+                                    Text(rule)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.primary)
+                                }
+                            }
+                        }
+                        .onDelete { ruleRows.removeOffsets($0, from: &rules) }
+                        .onMove { ruleRows.move(fromOffsets: $0, toOffset: $1, in: &rules) }
+                        .onAppear { ruleRows.resync(count: rules.count) }
+                        .onChange(of: rules.count) { ruleRows.resync(count: $0) }
+
+                        HakoAddRow(Text("Add Rule")) {
+                            editingRule = RuleEditTarget(rowID: nil, raw: "")
+                        } touchLabel: {
+                            Label("Add Rule", systemImage: HakoSymbol.plus.name)
+                        }
+                        Toggle("Insert before profile URL rules", isOn: $prependRules)
+                            .accessibilityIdentifier("profile.override.prepend-rules")
+                    } header: {
+                        Text("Added Rules")
+                    }
+    }
+
+    private var exceptionsPage: some View {
+        Form { addedRulesSection }
+            .hakoPageTitle("This Profile's Exceptions")
+    }
+
+    private var patchFieldCount: Int {
+        ((try? JSONSerialization.jsonObject(with: Data(patchText.utf8))) as? [String: Any])?.count ?? 0
+    }
+
+    private var patchPage: some View {
+        Form {
+            Section {
+                CodeEditorPanel(
+                    text: $patchText,
+                    language: .json,
+                    minHeight: 260,
+                    diagnosticLine: patchDiagnosticLine
+                )
+            }
+            Section {
+                Button("Clear Field Patch", role: .destructive) { patchText = "{}" }
+                    .accessibilityIdentifier("profile.override.patch.clear")
+            }
+        }
+        .hakoPageTitle("Field Patch")
+    }
+
     private func draftProfile() throws -> Profile {
         let trimmed = patchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let patchJSON: String
-        if mode != .standard || trimmed.isEmpty || trimmed == "{}" {
+        if mode == .custom || trimmed.isEmpty || trimmed == "{}" {
             patchJSON = ""
         } else {
             let value = try JSONSerialization.jsonObject(with: Data(trimmed.utf8))
@@ -507,20 +854,54 @@ struct ProfileOverrideView: View {
         if mode == .custom { try customOverwrite.validate() }
 
         var settings = settingsFacade.snapshot(for: profile)
-        settings.override = OverrideSpec(
-            patchJSON: patchJSON,
-            appendRules: rules,
-            prependRules: prependRules,
-            disabledGlobalRules: globalRules.filter(disabledGlobalRules.contains)
-        )
+         
+        settings.override.patchJSON = patchJSON
+        settings.override.appendRules = rules
+        settings.override.prependRules = prependRules
+        settings.override.disabledGlobalRules = globalRules.filter(disabledGlobalRules.contains)
         settings.selectedScriptID = selectedScriptID
-        settings.overwriteMode = mode
+        settings.overwriteMode = ProfileOverrideModePolicy.mode(stored: mode, selectedScriptID: selectedScriptID)
         settings.customOverwrite = customOverwrite
         settings.proxyChain = proxyChain.isEmpty ? nil : proxyChain
         settings.legacyRelayMigrations = legacyRelayMigrations.isEmpty
             ? nil
             : legacyRelayMigrations
         return settingsFacade.applying(settings, to: profile)
+    }
+
+     
+     
+     
+    @MainActor
+    private func updateScripts() async {
+        guard !updatingScripts else { return }
+        updatingScripts = true
+        defer { updatingScripts = false }
+        let targets = scripts.filter { !($0.sourceURL ?? "").isEmpty }
+        if targets.isEmpty {
+            scriptsUpdateMessage = HakoCopy.string(
+                "These scripts were imported before the app kept their link, so there is nothing to fetch yet. Import each from its link once more; Update works from then on.",
+                locale: .current)
+            showsScriptsUpdate = true
+            return
+        }
+        var changed = 0
+        var failed: [String] = []
+        for script in targets {
+            do {
+                let refreshed = try await ScriptImport.refreshed(script)
+                if refreshed.body != script.body {
+                    ScriptLibrary.upsert(refreshed, in: scriptLibrary)
+                    changed += 1
+                }
+            } catch {
+                failed.append(script.label)
+            }
+        }
+        scriptsUpdateMessage = failed.isEmpty
+            ? HakoCopy.format("%lld scripts updated.", locale: .current, changed)
+            : HakoCopy.format("%lld scripts updated; these failed: %@", locale: .current, changed, failed.joined(separator: ", "))
+        showsScriptsUpdate = true
     }
 
     private var proxyChainSubtitle: HakoDisplayText {
@@ -765,15 +1146,11 @@ struct ProfileProxyChainEditor: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Edit the profile or rebuild the affected proxies and group before using this configuration.")
+                Text("Edit the profile or rebuild the affected proxies and group before using this profile.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if isConfirmed(relay) {
-                Text("This profile uses the reviewed TCP-only chain; the original profile stays unchanged.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 Button("Remove Migration", role: .destructive) {
                     confirmingRelayRemoval = relay
                 }
@@ -800,7 +1177,7 @@ struct ProfileProxyChainEditor: View {
     }
 
     private var legacyRelayFooter: some View {
-        Text("Older relay groups require review before Clash can rebuild them as supported proxy chains.")
+        EmptyView()
     }
 
     @Binding var spec: ProxyChainSpec
@@ -951,8 +1328,6 @@ struct ProfileProxyChainEditor: View {
                             )
                         }
                         .accessibilityIdentifier("proxy-chains.row.add-node")
-                    } footer: {
-                        Text(HakoCopy.key("A chain links two nodes this profile already has. Build nodes first, then come back to link them."))
                     }
                 }
             } else if !editableInventory.isEmpty {
@@ -980,8 +1355,6 @@ struct ProfileProxyChainEditor: View {
                     }
                     Section {
                         addChainRow
-                    } footer: {
-                        Text("Each row reads the way the traffic goes: entry first, exit last. The site you open sees the exit. Tap a chain to change or remove it.")
                     }
                 } else {
                     Section {
@@ -989,8 +1362,6 @@ struct ProfileProxyChainEditor: View {
                         addChainRow
                     } header: {
                         chainsHeader
-                    } footer: {
-                        Text("Each row reads the way the traffic goes: entry first, exit last. The site you open sees the exit. Tap a chain to change or remove it.")
                     }
                 }
             }
@@ -1028,7 +1399,7 @@ struct ProfileProxyChainEditor: View {
                 } header: {
                     Text("Needs Attention")
                 } footer: {
-                    Text("A subscription update or source edit renamed/deleted these proxies. Migrate the identity or remove its override before saving.")
+                    Text("A profile URL update or source edit renamed/deleted these proxies. Migrate the identity or remove its override before saving.")
                 }
             }
 
@@ -1133,10 +1504,8 @@ struct ProfileProxyChainEditor: View {
         ) { relay in
             Button("Enable") { setConfirmed(relay) }
             Button("Cancel", role: .cancel) {}
-        } message: { relay in
-            Text(
-                "Hako will use \(relay.pathDescription) as a TCP-only chain for this profile. UDP stays off and the original profile is not changed."
-            )
+        } message: { _ in
+            Text("UDP is not available on this chain.")
         }
         .alert(
             "Remove TCP-only migration?",
@@ -1183,7 +1552,7 @@ struct ProfileProxyChainEditor: View {
         if chainedProxies.isEmpty {
             HakoEmptyState(
                 title: "No Proxy Chains",
-                message: "A chain sends your traffic in through one proxy and out through another. The site you open sees the exit.",
+                message: "",
                 symbol: .link
             )
             .listRowSeparator(.hidden)
@@ -1716,8 +2085,6 @@ private struct ChainBuilder: View {
                         allowsNone: false
                     )
                     .accessibilityIdentifier("proxy-chain.builder.entry")
-                } footer: {
-                    Text("Your traffic goes here first.")
                 }
 
                 Section {
@@ -1729,8 +2096,6 @@ private struct ChainBuilder: View {
                         allowsNone: false
                     )
                     .accessibilityIdentifier("proxy-chain.builder.exit")
-                } footer: {
-                    Text("The site you open sees this one.")
                 }
 
                  
@@ -2006,15 +2371,11 @@ private struct ProxyDialerEditor: View {
                         allowsNone: true
                     )
                     .accessibilityIdentifier("proxy-chain.dialer-picker")
-                } footer: {
-                    Text("Your traffic goes here first. Clearing it removes the chain.")
                 }
 
                 Section {
                      
                     keyValue("Exit", proxy.name)
-                } footer: {
-                    Text("The site you open sees this one.")
                 }
 
                 if case .failure(let pathError) = previewedPath {
@@ -2248,8 +2609,6 @@ private struct ProxyIdentityMigrationView: View {
                         dismissPresentation()
                     }
                     .accessibilityIdentifier("proxy-chain.orphan.remove")
-                } footer: {
-                    Text("Removing the override does not delete or modify the downloaded source.")
                 }
 
                 if !error.isEmpty {
@@ -2300,5 +2659,15 @@ private struct ProxyIdentityMigrationView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+}
+
+ 
+ 
+ 
+enum ProfileOverrideModePolicy {
+    static func mode(stored: Profile.OverwriteMode, selectedScriptID: String?) -> Profile.OverwriteMode {
+        if stored == .custom { return .custom }
+        return selectedScriptID == nil ? .standard : .script
     }
 }

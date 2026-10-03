@@ -35,10 +35,6 @@ struct ProfileNetworkSettingsView: View {
     private let ownsNavigationContainer: Bool
      
      
-     
-    private let udpFallbackGuardInput: () async -> ConfigTransforms.UDPFallbackGuardInput?
-     
-     
     private let profileForDeviations: Profile
     @State private var deviations: ConfigDeviationReport?
 
@@ -46,7 +42,6 @@ struct ProfileNetworkSettingsView: View {
         profile: Profile,
         sourceYAML: String? = nil,
         ownsNavigationContainer: Bool = true,
-        udpFallbackGuardInput: @escaping () async -> ConfigTransforms.UDPFallbackGuardInput? = { nil },
         save: @escaping (ProfileNetworkDraft) throws -> Void
     ) {
         let draft = ProfileNetworkDraft(profile: profile, sourceYAML: sourceYAML)
@@ -54,34 +49,12 @@ struct ProfileNetworkSettingsView: View {
         profileForDeviations = profile
         profileName = profile.label
         self.ownsNavigationContainer = ownsNavigationContainer
-        self.udpFallbackGuardInput = udpFallbackGuardInput
         _draft = State(initialValue: draft)
         _openedWith = State(initialValue: draft)
         _timePortText = State(initialValue: draft.timePort.map(String.init) ?? "")
         _timeIntervalText = State(
             initialValue: draft.timeIntervalMinutes.map(String.init) ?? ""
         )
-    }
-
-    @ViewBuilder
-    private var udpFallbackDestination: some View {
-#if os(macOS)
-        HakoDeferredDraftHost(source: $draft.udpFallbackPolicy) { policy in
-            UDPFallbackSettingsView(
-                policy: policy,
-                offersInherit: true,
-                overallPolicy: UDPFallbackSettings.policy(),
-                guardInput: udpFallbackGuardInput
-            )
-        }
-#else
-        UDPFallbackSettingsView(
-            policy: $draft.udpFallbackPolicy,
-            offersInherit: true,
-            overallPolicy: UDPFallbackSettings.policy(),
-            guardInput: udpFallbackGuardInput
-        )
-#endif
     }
 
      
@@ -123,7 +96,6 @@ struct ProfileNetworkSettingsView: View {
     private func modalTitle(for route: ProfileNetworkRoute) -> String {
         switch route {
         case .sniffer: "Sniffer"
-        case .udpFallback: "UDP Fallback"
         case .ntp: "NTP"
         }
     }
@@ -133,8 +105,6 @@ struct ProfileNetworkSettingsView: View {
         switch route {
         case .sniffer:
             ProfileSnifferSettingsView(draft: $draft)
-        case .udpFallback:
-            udpFallbackDestination
         case .ntp:
             ProfileNTPSettingsView(
                 draft: $draft,
@@ -150,16 +120,6 @@ struct ProfileNetworkSettingsView: View {
         ) {
             HakoMacSettingsFormContainer {
                 Section {
-                    HakoProfileContextHeader(
-                        profileName: profileName,
-                        message:
-                            "Sniffer and NTP belong to this profile. App-wide network behavior is under More > Core Settings."
-                    ) {
-                        HakoSymbolImage(symbol: .profileClipboard)
-                    }
-                }
-
-                Section {
                     sectionRow(.sniffer) {
                         DNSHubRow(title: "Sniffer",
                                   detail: "Finds the domain behind each connection before rules run",
@@ -169,23 +129,6 @@ struct ProfileNetworkSettingsView: View {
                 } footer: {
                     Text(
                         "Sniffer discovers domains before this profile's rules are evaluated."
-                    )
-                }
-
-                Section {
-                    sectionRow(.udpFallback) {
-                         
-                         
-                        DNSHubRow(
-                            title: "UDP Fallback",
-                            detail: "",
-                            value: udpFallbackSummary
-                        )
-                    }
-                    .accessibilityIdentifier("profile-network.udp-fallback")
-                } footer: {
-                    Text(
-                        "Overrides the client setting for this profile only. Useful when every line in one subscription carries UDP."
                     )
                 }
 
@@ -205,7 +148,7 @@ struct ProfileNetworkSettingsView: View {
                 }
             }
             
-            .hakoPageTitle("Profile Network")
+            .hakoPageTitle("Sniffer & NTP")
              
              
              
@@ -237,11 +180,27 @@ struct ProfileNetworkSettingsView: View {
                          
                          
                          
+                         
+                         
+                         
+                         
+                         
+                         
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            HakoModalActionBar(primaryTitle: "Save",
+                                primaryDisabled: draft == openedWith,
+                                onPrimary: { if commit() { sectionSelection = nil } })
+                        }
+                         
+                         
+                         
+                         
+                         
+                         
                         .hakoRegistersDeparture(
                             isDirty: draft != openedWith,
                             save: { completion in
-                                persist()
-                                completion(true)
+                                completion(commit())
                             },
                             discard: { draft = openedWith }
                         )
@@ -323,35 +282,6 @@ struct ProfileNetworkSettingsView: View {
 
      
      
-    private var udpFallbackSummary: String {
-        let key: String
-        switch draft.udpFallbackPolicy {
-         
-         
-        case .none:
-            return HakoCopy.string(
-                for: .formatCopy("Same as overall (%@)", [udpFallbackTitle(UDPFallbackSettings.policy())]),
-                locale: locale
-            )
-        case .quic: key = "Reject QUIC"
-        case .quicAllPorts: key = "Reject QUIC on 443 and 80"
-        case .allUDP: key = "Reject all fallthrough UDP"
-        case .off: key = "Off"
-        }
-        return HakoCopy.string(key, locale: locale)
-    }
-
-     
-     
-    private func udpFallbackTitle(_ policy: UDPFallbackPolicy) -> String {
-        switch policy {
-        case .quic: "Reject QUIC"
-        case .quicAllPorts: "Reject QUIC on 443 and 80"
-        case .allUDP: "Reject all fallthrough UDP"
-        case .off: "Off"
-        }
-    }
-
     private var snifferSummary: String {
          
          
@@ -384,6 +314,15 @@ struct ProfileNetworkSettingsView: View {
     }
 
     private func persist() {
+        if commit() { closePage() }
+    }
+
+     
+     
+     
+     
+    @discardableResult
+    private func commit() -> Bool {
         do {
             draft.timePort = try Self.positiveNumber(
                 timePortText,
@@ -394,12 +333,14 @@ struct ProfileNetworkSettingsView: View {
                 invalid: .invalidTimeInterval
             )
             try save(draft)
-            closePage()
+            openedWith = draft
+            return true
         } catch let bounded as ProfileNetworkDraftError {
             error = bounded.localizedDescription
         } catch {
             self.error = "Network settings could not be saved. The previous configuration is still available."
         }
+        return false
     }
 
     private static func positiveNumber(
@@ -430,7 +371,7 @@ struct ProfileNetworkSettingsView: View {
  
  
  
-private enum CoreBehaviorDoor: String, Identifiable {
+private enum CoreBehaviorRoute: String, Identifiable {
     case keepAlive
     var id: String { rawValue }
 }
@@ -446,7 +387,7 @@ struct GlobalCoreBehaviorSettingsView: View {
      
     @Environment(\.hakoProductModalDismiss)
     private var productModalDismiss
-    @State private var doorSelection: CoreBehaviorDoor?
+    @State private var doorSelection: CoreBehaviorRoute?
 
     private var keepAliveDestination: some View {
         GlobalKeepAliveSettingsView(
@@ -571,10 +512,6 @@ struct GlobalCoreBehaviorSettingsView: View {
         )
     }
 
-    private var logLevelState: InheritedText {
-        InheritedText(base: runtime.inheritedTextBase("log-level"), override: runtime.logLevel,
-                      upstreamDefault: UpstreamTextDefault.pinned(for: "log-level"))
-    }
     private var geositeMatcherState: InheritedText {
         InheritedText(base: runtime.inheritedTextBase("geosite-matcher"), override: runtime.geositeMatcher,
                       upstreamDefault: UpstreamTextDefault.pinned(for: "geosite-matcher"))
@@ -582,7 +519,7 @@ struct GlobalCoreBehaviorSettingsView: View {
 
      
      
-    private static let pageKeyPaths = ["ipv6", "unified-delay", "tcp-concurrent"]
+    private static let pageKeyPaths = ["unified-delay", "tcp-concurrent"]
 
      
      
@@ -631,13 +568,9 @@ struct GlobalCoreBehaviorSettingsView: View {
                 }
             }
             Section {
-                DNSFieldRows.overrideMenuRow(
-                    "IPv6",
-                    $network.ipv6,
-                    inherited: network.inheritedBase("ipv6"),
-                    upstreamDefault: UpstreamBoolDefault.value(for: "ipv6"),
-                    identifier: "global-core.ipv6"
-                )
+                Text("IP address families are controlled in More > IP Stack.")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("global-core.ipStack")
                 DNSFieldRows.overrideMenuRow(
                     "Unified delay",
                     $network.unifiedDelay,
@@ -652,7 +585,7 @@ struct GlobalCoreBehaviorSettingsView: View {
                     upstreamDefault: UpstreamBoolDefault.value(for: "tcp-concurrent"),
                     identifier: "global-core.tcp-concurrent"
                 )
-                HakoDoorLink(CoreBehaviorDoor.keepAlive, selection: $doorSelection) {
+                HakoDoorLink(CoreBehaviorRoute.keepAlive, selection: $doorSelection) {
                     keepAliveDestination
                 } label: {
                     DNSHubRow(
@@ -671,23 +604,6 @@ struct GlobalCoreBehaviorSettingsView: View {
             }
 
             Section {
-                DNSFieldRows.menuRow(
-                    title: "Log level",
-                    value: logLevelState.primaryTitle,
-                    subtitle: logLevelState.sourceLine,
-                    identifier: "global-core.log-level"
-                ) {
-                    Picker("Log level", selection: $runtime.logLevel) {
-                        Text(hako: logLevelState.followTitle).tag(String?.none)
-                        ForEach(
-                            ProfileRuntimeTrustDraft.supportedLogLevels,
-                            id: \.self
-                        ) {
-                            Text(verbatim: $0).tag(Optional($0))
-                        }
-                    }
-                }
-
                  
                  
                  
@@ -841,11 +757,25 @@ struct GlobalCoreBehaviorSettingsView: View {
         }
         .hakoDoorPresenter(
             selection: $doorSelection,
-            title: { _ in "TCP Keep Alive" }
+            title: { _ in "TCP Keep Alive" },
+             
+            saving: HakoDoorSaving(
+                isDirty: { hasUnsavedChanges },
+                save: { $0(commit()) },
+                discard: revert
+            )
         ) { _ in
             keepAliveDestination
         }
         .hakoPageTitle("Core Behavior")
+         
+         
+         
+        .hakoRegistersDeparture(
+            isDirty: hasUnsavedChanges,
+            save: { completion in completion(commit()) },
+            discard: revert
+        )
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                  
@@ -889,7 +819,24 @@ struct GlobalCoreBehaviorSettingsView: View {
             : HakoCopy.format("%d overriding the profile", locale: locale, count)
     }
 
-    private func persist() {
+     
+     
+     
+    private func persist() { if commit() { closePage() } }
+
+     
+     
+    private func revert() {
+        network = storedNetwork
+        runtime = storedRuntime
+        keepAliveIdleText = storedKeepAliveIdleText
+        keepAliveIntervalText = storedKeepAliveIntervalText
+        userAgentPreset = storedUserAgentPreset
+        certificateStore = storedCertificateStore
+    }
+
+    @discardableResult
+    private func commit() -> Bool {
         do {
             network.keepAliveIdleSeconds = try Self.seconds(
                 keepAliveIdleText,
@@ -912,8 +859,15 @@ struct GlobalCoreBehaviorSettingsView: View {
                 certificateStore,
                 forKey: CertificateStorePolicy.defaultsKey
             )
+             
+             
+            storedNetwork = network
+            storedRuntime = runtime
+            storedKeepAliveIdleText = keepAliveIdleText
+            storedKeepAliveIntervalText = keepAliveIntervalText
+            storedUserAgentPreset = userAgentPreset
             storedCertificateStore = certificateStore
-            closePage()
+            return true
         } catch let bounded as ProfileNetworkDraftError {
             error = bounded.localizedDescription
         } catch let bounded as ProfileRuntimeTrustError {
@@ -922,6 +876,7 @@ struct GlobalCoreBehaviorSettingsView: View {
             self.error =
                 "Core behavior could not be saved. The previous configuration remains available."
         }
+        return false
     }
 
     private static func seconds(
@@ -1104,10 +1059,8 @@ private struct ProfileNTPSettingsBody: View {
     }
 
     var body: some View {
-         
         HakoMacSettingsFormContainer(
-            restoreDefaults: restoreDefaults,
-            scopeFooter: .copy("These settings apply to this profile only.")
+            restoreDefaults: restoreDefaults
         ) {
             Section {
                 DNSFieldRows.overrideMenuRow(
@@ -1224,10 +1177,8 @@ private struct ProfileSnifferSettingsBody: View {
     }
 
     var body: some View {
-         
         HakoMacSettingsFormContainer(
-            restoreDefaults: restoreDefaults,
-            scopeFooter: .copy("These settings apply to this profile only.")
+            restoreDefaults: restoreDefaults
         ) {
             Section {
                 DNSFieldRows.overrideMenuRow(
@@ -1576,7 +1527,6 @@ private func optionalTextRow(
  
 enum ProfileNetworkRoute: Hashable, Identifiable {
     case sniffer
-    case udpFallback
     case ntp
 
     var id: Self { self }

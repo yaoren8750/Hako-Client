@@ -3,7 +3,6 @@ import HakoClientUI
 
 typealias HomeSection = HakoClientUI.HakoHomeSection
 typealias HomeFavoriteCard = HakoClientUI.HakoHomeCard
-typealias HomeAdjustmentModule = HakoClientUI.HakoHomeAdjustmentModule
 
 typealias HakoCopy = HakoClientUI.HakoCopy
 
@@ -221,6 +220,10 @@ struct ProfileFinalConfigurationDisclosure: Equatable, Identifiable, Sendable {
      
      
     var strippedKeys: [String] = []
+     
+     
+     
+    var lines: [String] = []
 }
 
  
@@ -233,22 +236,86 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
     let fixedItems: [ProfileFinalConfigurationDisclosure]
     let unsupportedItems: [ProfileFinalConfigurationDisclosure]
     let adaptedItems: [ProfileFinalConfigurationDisclosure]
+     
+     
+     
+     
+     
+    let sourceFingerprint: Int
+    let effectiveFingerprint: Int
 
+    init(
+        sourceText: String?,
+        effectiveText: String?,
+        fixedItems: [ProfileFinalConfigurationDisclosure],
+        unsupportedItems: [ProfileFinalConfigurationDisclosure],
+        adaptedItems: [ProfileFinalConfigurationDisclosure]
+    ) {
+        self.sourceText = sourceText
+        self.effectiveText = effectiveText
+        self.fixedItems = fixedItems
+        self.unsupportedItems = unsupportedItems
+        self.adaptedItems = adaptedItems
+        sourceFingerprint = sourceText?.hashValue ?? 0
+        effectiveFingerprint = effectiveText?.hashValue ?? 0
+    }
+
+     
+     
+    static func textOnly(sourceYAML: String?, effectiveYAML: String?) -> ProfileFinalConfigurationSnapshot {
+        ProfileFinalConfigurationSnapshot(
+            sourceText: presentedText(sourceYAML),
+            effectiveText: presentedText(effectiveYAML),
+            fixedItems: [],
+            unsupportedItems: [],
+            adaptedItems: []
+        )
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
     static func make(
         sourceYAML: String?,
-        effectiveYAML: String?
+        effectiveYAML: String?,
+        omittedRules: [String] = [],
+        omittedPersonalRules: [String] = []
     ) -> ProfileFinalConfigurationSnapshot {
         let sourceText = presentedText(sourceYAML)
         let effectiveText = presentedText(effectiveYAML)
         let source = object(sourceText)
         let effective = object(effectiveText)
 
+        var adapted = adaptedDisclosures(source: source, effective: effective)
+        if !omittedRules.isEmpty {
+            adapted.append(.init(
+                id: "omitted-rules",
+                title: "Rules Not in Effect as Written",
+                detail: "Each of these rules names a node that none of this configuration's node sources includes. A rule is left out and its traffic follows the rules below it; a final MATCH rule sends traffic directly instead. Add that node's source to this configuration, or route the rule to a policy group.",
+                lines: omittedRules
+            ))
+        }
+        if !omittedPersonalRules.isEmpty {
+            adapted.append(.init(
+                id: "omitted-personal-rules",
+                title: "Custom Rules Not in Effect",
+                detail: "Each of these rules names a policy this configuration does not define, so it is left out and its traffic follows the rules below it. Route the rule to one of this configuration's policy groups, or switch to a rule scheme that has that one.",
+                lines: omittedPersonalRules
+            ))
+        }
         return ProfileFinalConfigurationSnapshot(
             sourceText: sourceText,
             effectiveText: effectiveText,
             fixedItems: fixedDisclosures,
             unsupportedItems: unsupportedDisclosures(in: source),
-            adaptedItems: adaptedDisclosures(source: source, effective: effective)
+            adaptedItems: adapted
         )
     }
 
@@ -289,7 +356,7 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
         .init(
             id: "client-resource-updates",
             title: "Resource Updates",
-            detail: "Clash downloads subscriptions, providers and Geo data in the Client with conditional HTTP and last-known-good recovery; the packet-tunnel Core does not perform background downloads."
+            detail: "Clash downloads profile URLs, providers and Geo data in the Client with conditional HTTP and last-known-good recovery; the packet-tunnel Core does not perform background downloads."
         ),
          
          
@@ -303,8 +370,8 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
          
         .init(
             id: "external-controller",
-            title: "External Controller & Web UI",
-            detail: "The API listens at the configured address, TLS included, with the profile's secret and CORS rules applied, and the web UI is served — downloaded only if the app has not already placed it. Configuration writes stay with the app: the API serves reads, proxy selection and connection close."
+            title: "External Controller",
+            detail: "The API listens at the configured address, TLS included, with the profile's secret and CORS rules applied. The web dashboard is not downloaded or hosted. Configuration writes stay with the app: the API serves reads, proxy selection and connection close."
         ),
     ]
 #else
@@ -355,11 +422,11 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
         .init(
             id: "client-resource-updates",
             title: "Resource Updates",
-            detail: "Clash downloads subscriptions, providers and Geo data in the Client with conditional HTTP and last-known-good recovery; the packet-tunnel Core does not perform background downloads."
+            detail: "Clash downloads profile URLs, providers and Geo data in the Client with conditional HTTP and last-known-good recovery; the packet-tunnel Core does not perform background downloads."
         ),
         .init(
             id: "external-controller",
-            title: "External Controller & Web UI",
+            title: "External Controller",
              
              
              
@@ -370,7 +437,7 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
              
              
              
-            detail: "The API listens at the configured address, TLS included, with the profile's secret and CORS rules applied, and the web UI is served — downloaded only if the app has not already placed it. Configuration writes stay with the app: the API serves reads, proxy selection and connection close."
+            detail: "The API listens at the configured address, TLS included, with the profile's secret and CORS rules applied. The web dashboard is not downloaded or hosted. Configuration writes stay with the app: the API serves reads, proxy selection and connection close."
         ),
     ]
 #endif
@@ -415,6 +482,12 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
         "interface-name", "routing-mark",
     ]
 
+     
+     
+    private static let dashboardKeys: Set<String> = [
+        "external-ui", "external-ui-url", "external-ui-name",
+    ]
+
     private static let platformServiceKeys: Set<String> = [
         "iptables", "clash-for-android",
     ]
@@ -454,6 +527,15 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
                  
                  
                 strippedKeys: keys.intersection(deadControllerSpellings)
+                    .intersection(ConfigTransforms.iosUnsupportedTopLevelKeys).sorted()
+            ))
+        }
+        if !keys.isDisjoint(with: dashboardKeys) {
+            result.append(.init(
+                id: "web-dashboard",
+                title: "Web Dashboard",
+                detail: "The web dashboard is not downloaded or hosted by this app; the external controller itself runs as written, and any dashboard you host elsewhere can point at it.",
+                strippedKeys: keys.intersection(dashboardKeys)
                     .intersection(ConfigTransforms.iosUnsupportedTopLevelKeys).sorted()
             ))
         }
@@ -680,3 +762,95 @@ typealias HomeConnectionPresentation =
     HakoClientUI.HakoHomeConnectionPresentation
 typealias HomeConnectionPresenter =
     HakoClientUI.HakoHomeConnectionPresenter
+
+ 
+ 
+ 
+ 
+enum HomeProxiesEntryPolicy {
+     
+     
+     
+     
+     
+     
+     
+    static func groupToOpen(
+        pending: String?,
+        lastOpened: String?,
+        groups: [String],
+        readerFoldedAll: Bool = false
+    ) -> String? {
+        if let pending { return pending }
+        if readerFoldedAll { return nil }
+        if let lastOpened, groups.contains(lastOpened) { return lastOpened }
+        return groups.first
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func candidates<Group>(
+        _ groups: [Group],
+        mode: ProxyBrowsingVisibility.Mode,
+        name: (Group) -> String,
+        isHidden: (Group) -> Bool
+    ) -> [String] {
+        ProxyBrowsingVisibility.groups(groups, mode: mode, name: name, isHidden: isHidden).map(name)
+    }
+}
+
+ 
+ 
+ 
+ 
+enum HomeProxiesCardPolicy {
+    static func domainSnapshot(
+        mode: Profile.OutboundMode,
+        standard: HakoHomeDomainSnapshot,
+        globalNode: String?
+    ) -> HakoHomeDomainSnapshot {
+        guard mode == .global else { return standard }
+        return HakoHomeDomainSnapshot(
+            count: standard.count,
+            countUnit: standard.countUnit,
+            breakdown: ProxyBrowsingVisibility.kernelGlobalGroupName,
+            names: globalNode.map { [$0] } ?? []
+        )
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+enum ProxiesPresentedDocument {
+    static func make(
+        source: String?,
+        profile: Profile,
+        fallback: String?,
+        build: (String, Profile) throws -> String = { try ProfileRuntimeConfigBuilder.buildProduction(raw: $0, profile: $1) }
+    ) -> String? {
+        guard let source else { return fallback }
+        return (try? build(source, profile)) ?? fallback
+    }
+
+     
+     
+     
+    static func key(projectionKey: String, profile: Profile, scriptBody: String?) -> String {
+        var parts = [projectionKey, String(describing: profile.overwriteMode), profile.selectedScriptID ?? "-", String(scriptBody?.hashValue ?? 0)]
+         
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        if let encoded = try? encoder.encode(profile) { parts.append(String(encoded.hashValue)) }
+        if let runtime = try? encoder.encode(FlClashRuntimeConfig.load()) { parts.append(String(runtime.hashValue)) }
+        return parts.joined(separator: "|")
+    }
+}

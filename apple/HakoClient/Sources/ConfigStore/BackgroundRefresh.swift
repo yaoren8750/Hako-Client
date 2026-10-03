@@ -1,5 +1,6 @@
 import BackgroundTasks
 import Foundation
+import HakoClientKit
 
  
  
@@ -9,6 +10,41 @@ enum ProfilesDueForRefresh {
             guard profile.autoUpdate, case .url = profile.source else { return false }
             guard let last = profile.lastUpdatedAt else { return true }
             return last.addingTimeInterval(TimeInterval(profile.updateIntervalHours) * 3600) <= now
+        }
+    }
+}
+
+extension Notification.Name {
+     
+     
+     
+     
+     
+     
+     
+     
+    static let hakoConfigurationSourcesRefreshed = Notification.Name("HakoConfigurationSourcesRefreshed")
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ConfigurationSourcesDueForRefresh {
+    static func select(sources: [ConfigurationSourceRecord], now: Date) -> [ConfigurationSourceRecord] {
+        sources.filter { source in
+            guard case .subscription = source.origin, source.isRetainedSnapshot != true,
+                  let hours = source.updateIntervalHours, hours > 0 else { return false }
+            return source.updatedAt.addingTimeInterval(TimeInterval(hours) * 3600) <= now
         }
     }
 }
@@ -136,11 +172,18 @@ enum BackgroundRefresh {
         now: Date = Date(),
         containerURL: URL? = nil
     ) -> Date {
-        let fallback = BackgroundRefreshPolicy.earliestEligibility(
+        var fallback = BackgroundRefreshPolicy.earliestEligibility(
             afterHours: 4,
             from: now
         )
         let container = containerURL ?? HakoAppIdentifiers.appGroupContainer
+        if let container,
+           let snapshot = try? ConfigurationLibraryStore(directory: container.appendingPathComponent("working/configuration-library")).snapshot() {
+            for source in snapshot.availableSources {
+                guard case .subscription = source.origin, let hours = source.updateIntervalHours, hours > 0 else { continue }
+                fallback = min(fallback, max(now.addingTimeInterval(60), source.updatedAt.addingTimeInterval(Double(hours) * 3600)))
+            }
+        }
         guard let container,
               let store = try? ConfigResourceStore(containerURL: container),
               let providersDir = try? store.activeProvidersDirectory(),
@@ -240,6 +283,13 @@ enum BackgroundRefresh {
             return outcome
         }
         let working = container.appendingPathComponent("working")
+        do {
+            try await MainActor.run {
+                try ConfigurationCenterPublicationBridge.recoverReplacements(
+                    library: ConfigurationLibraryStore(directory: working.appendingPathComponent("configuration-library")),
+                    workingDir: working)
+            }
+        } catch { outcome.record(error); return outcome }
         let profileStore = ProfileStore(fileURL: working.appendingPathComponent("store/profiles.json"))
         let credentials = CredentialStore()
         let downloader = ResourceDownloader()
@@ -292,6 +342,12 @@ enum BackgroundRefresh {
          
          
          
+        let sourceUpdates = await ConfigurationCenterSourceBridge.refreshDueSources(container: container, now: now)
+        outcome.attempted += sourceUpdates.attempted
+        outcome.updated += sourceUpdates.updated
+        outcome.failed += sourceUpdates.failed
+        if sourceUpdates.cancelled { outcome.cancelled = true; return outcome }
+
         let firstLoad = await ProviderFirstLoadRetry.run(trigger: .scan, container: container, now: now)
         outcome.attempted += firstLoad.attempted
         outcome.updated += firstLoad.updated

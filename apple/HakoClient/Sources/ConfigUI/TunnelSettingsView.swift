@@ -21,24 +21,14 @@ struct TunnelSettingsView: View {
     @State private var isApplying = false
     @State private var error = ""
 
-    private var enforceRoutesEffective: Bool {
-        draft.enforceRoutes || vpn.configurationStrictRoute
-    }
-
     var body: some View {
         HakoMacSettingsFormContainer {
             Section {
                  
                  
                  
-                Toggle(
-                    "Enforce Routes",
-                    isOn: vpn.configurationStrictRoute
-                        ? .constant(true)
-                        : binding(\.enforceRoutes)
-                )
-                .disabled(vpn.configurationStrictRoute)
-                .accessibilityIdentifier("tunnel.enforceRoutes")
+                Toggle("Enforce Routes", isOn: binding(\.enforceRoutes))
+                    .accessibilityIdentifier("tunnel.enforceRoutes")
             } footer: {
                 Text("If YES, route rules for this tunnel will take precedence over any locally-defined routes. The default is NO.")
             }
@@ -60,7 +50,7 @@ struct TunnelSettingsView: View {
 
             Section {
                 Toggle("Include Local Networks", isOn: binding(\.includeLocalNetworks))
-                    .disabled(!(draft.includeAllNetworks || enforceRoutesEffective))
+                    .disabled(!(draft.includeAllNetworks || draft.enforceRoutes))
                     .accessibilityIdentifier("tunnel.includeLocalNetworks")
             } header: {
                 Text("Include Local Networks")
@@ -108,6 +98,17 @@ struct TunnelSettingsView: View {
                 Text("HomeKit Compatibility")
             } footer: {
                 Text("If YES, the tunnel does not take the default route and installs a split route table instead, so HomeKit accessories on the local network keep answering. Internet Sharing does not work while this is on. Takes effect on the next connection.")
+            }
+
+             
+             
+            Section {
+                Toggle("Exclude APNs Route", isOn: binding(\.excludeAPNsRoute))
+                    .accessibilityIdentifier("tunnel.excludeAPNsRoute")
+            } header: {
+                Text("Exclude APNs Route")
+            } footer: {
+                Text("If YES, 17.0.0.0/8 stays outside the tunnel and push.apple.com resolves to its real address, so Apple push notifications reach this device directly instead of through the proxy. Takes effect on the next connection.")
             }
 
             if !error.isEmpty {

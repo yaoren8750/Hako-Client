@@ -9,6 +9,9 @@ struct RulePolicyOptions {
     let ruleSets: [String]
      
      
+    var hiddenGroups: Set<String> = []
+     
+     
      
      
     var domainRuleSets: [String] = []
@@ -36,6 +39,7 @@ struct RulePolicyOptions {
                 ($0.name, $0.type)
             },
             ruleSets: rulesModel.ruleSets.map(\.name),
+            hiddenGroups: Set(proxiesModel.groups.filter(\.hidden).map(\.name)),
             domainRuleSets: rulesModel.ruleSets
                 .filter { $0.behavior != "ipcidr" }
                 .map(\.name),
@@ -59,6 +63,7 @@ struct RulePolicyOptions {
             groups: groups + fresh,
             proxies: proxies,
             ruleSets: ruleSets,
+            hiddenGroups: hiddenGroups,
             domainRuleSets: domainRuleSets,
             subRuleNames: subRuleNames
         )
@@ -84,7 +89,8 @@ struct RulePolicyOptions {
             groups: groups.map {
                 HakoRulePolicySnapshot(
                     name: $0.name,
-                    type: $0.type
+                    type: $0.type,
+                    isHidden: hiddenGroups.contains($0.name)
                 )
             },
             proxies: proxies.map {
@@ -100,6 +106,21 @@ struct RulePolicyOptions {
 }
 
 typealias RuleTargetVerdict = HakoRuleTargetVerdict
+
+extension RulePolicyOptions {
+     
+     
+     
+    init(shared: HakoRulePolicyOptions) {
+        self.init(
+            groups: shared.groups.map { ($0.name, $0.type) },
+            proxies: shared.proxies.map { ($0.name, $0.type) },
+            ruleSets: shared.ruleSets,
+            hiddenGroups: Set(shared.groups.filter(\.isHidden).map(\.name)),
+            subRuleNames: shared.subRuleNames
+        )
+    }
+}
 
 extension RulePolicyOptions {
     static let builtinPolicies =
@@ -120,6 +141,11 @@ extension RulePolicyOptions {
  
  
 struct RuleBuilderAdapter: View {
+    private let delete: (() -> Void)?
+    private let showsPersonalMetadata: Bool
+    private let showsTarget: Bool
+    private let createGroup: ((@escaping (String?) -> Void) -> AnyView)?
+    private let pageTitle: String
     private let raw: String
     private let options: RulePolicyOptions
     private let enabled: Bool
@@ -131,13 +157,23 @@ struct RuleBuilderAdapter: View {
     init(
         raw: String,
         options: RulePolicyOptions = .empty,
+        showsPersonalMetadata: Bool = true,
+        showsTarget: Bool = true,
+        createGroup: ((@escaping (String?) -> Void) -> AnyView)? = nil,
+        delete: (() -> Void)? = nil,
         enabled: Bool = true,
         comment: String = "",
+        pageTitle: String = "Rule",
         saveDetails: (
             (_ raw: String, _ enabled: Bool, _ comment: String) -> Void
         )? = nil,
         save: @escaping (String) -> Void
     ) {
+        self.pageTitle = pageTitle
+        self.delete = delete
+        self.showsPersonalMetadata = showsPersonalMetadata
+        self.showsTarget = showsTarget
+        self.createGroup = createGroup
         self.raw = raw
         self.options = options
         self.enabled = enabled
@@ -154,7 +190,12 @@ struct RuleBuilderAdapter: View {
                 comment: comment.isEmpty ? nil : comment
             ),
             options: options.shared,
+            showsPersonalMetadata: showsPersonalMetadata,
+            showsTarget: showsTarget,
+            createGroup: createGroup,
+            delete: delete,
             initialRoute: initialRoute,
+            pageTitle: pageTitle,
             runtimeProfile: hakoAppleRuntimeProfile,
             palette: HakoClientUI.HakoProductPalette.hakoProduct,
             loadGeoValues: { resource in

@@ -7,6 +7,12 @@ struct ConfigScript: Codable, Equatable, Identifiable {
     var id: String
     var label: String
     var body: String
+     
+     
+     
+     
+     
+    var sourceURL: String? = nil
 }
 
 enum ScriptImportError: LocalizedError, Equatable {
@@ -23,7 +29,7 @@ enum ScriptImportError: LocalizedError, Equatable {
         case .notAnAddress:
              
              
-            return "That is not a web address. Paste the link to the script file, not the script."
+            return "That is not a web address. Paste the script file's URL, not the script."
         case let .unsupportedScheme(scheme):
             return HakoCopy.format(
                 "Scripts are imported over http or https. This address uses %@.",
@@ -134,6 +140,21 @@ enum ScriptImport {
         }
         return text
     }
+
+     
+     
+     
+    static func refreshed(
+        _ script: ConfigScript,
+        using downloader: HTTPFetching = ResourceDownloader()
+    ) async throws -> ConfigScript {
+        guard let address = script.sourceURL, !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ScriptImportError.emptyAddress
+        }
+        var updated = script
+        updated.body = try await body(at: address, using: downloader)
+        return updated
+    }
 }
 
 enum ScriptLibraryError: LocalizedError {
@@ -179,6 +200,11 @@ enum ScriptLibrary {
 
      
     static let defaultLabel = "New Script"
+
+     
+    static func fresh() -> ConfigScript {
+        ConfigScript(id: UUID().uuidString.lowercased(), label: defaultLabel, body: ScriptSettings.template)
+    }
 
     static func load(from defaults: UserDefaults = appGroupDefaults) -> [ConfigScript] {
         guard let data = defaults.data(forKey: key),
@@ -269,6 +295,7 @@ enum ScriptLibrary {
         id: String,
         label: String,
         body: String,
+        sourceURL: String? = nil,
         existing: [ConfigScript] = []
     ) -> ConfigScript? {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -278,7 +305,7 @@ enum ScriptLibrary {
                 && $0.label.caseInsensitiveCompare(trimmed) == .orderedSame
         }
         guard !taken else { return nil }
-        return ConfigScript(id: id, label: trimmed, body: body)
+        return ConfigScript(id: id, label: trimmed, body: body, sourceURL: sourceURL)
     }
 
     static func upsert(_ script: ConfigScript, in defaults: UserDefaults = appGroupDefaults) {
@@ -365,8 +392,14 @@ enum ScriptLibrary {
 
 struct ScriptLibraryView: View {
     @State private var scripts = ScriptLibrary.load()
+    @State private var deletingScripts: [ConfigScript] = []
     @State private var editing: ConfigScript?
-    @State private var adding = false
+    @State private var adding: ConfigScript?
+    @State private var updating = false
+    @State private var updateMessage = ""
+    @State private var showsUpdateResult = false
+     
+    private var updatable: [ConfigScript] { scripts.filter { !($0.sourceURL ?? "").isEmpty } }
 
     var body: some View {
         Group {
@@ -382,7 +415,7 @@ struct ScriptLibraryView: View {
                 Section {
                 HakoEmptyState(
                     title: "No Scripts",
-                    message: "Create a reusable main(config) transform, then select it in a profile override.",
+                    message: "",
                     symbol: .curlybraces
                 )
                 .listRowSeparator(.hidden)
@@ -403,15 +436,13 @@ struct ScriptLibraryView: View {
                 .accessibilityIdentifier("scripts.row.\(script.id)")
             }
             .onDelete { offsets in
-                let ids = offsets.compactMap { scripts.indices.contains($0) ? scripts[$0].id : nil }
-                ids.forEach { ScriptLibrary.remove(id: $0) }
-                scripts = ScriptLibrary.load()
+                deletingScripts = offsets.compactMap { scripts.indices.contains($0) ? scripts[$0] : nil }
             }
                 }
             }
             Section {
                 HakoAddRow(Text(HakoCopy.key("Add Script"))) {
-                    adding = true
+                    adding = ScriptLibrary.fresh()
                 }
                 .accessibilityIdentifier("scripts.row.add")
             }
@@ -421,7 +452,7 @@ struct ScriptLibraryView: View {
             if scripts.isEmpty {
                 HakoEmptyState(
                     title: "No Scripts",
-                    message: "Create a reusable main(config) transform, then select it in a profile override.",
+                    message: "",
                     symbol: .curlybraces
                 )
                 .listRowSeparator(.hidden)
@@ -438,11 +469,20 @@ struct ScriptLibraryView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("scripts.row.\(script.id)")
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    if !(script.sourceURL ?? "").isEmpty {
+                         
+                         
+                        Button { Task { await update([script]) } } label: {
+                            Label("Update", systemImage: HakoSymbol.arrowClockwise.name)
+                        }
+                        .tint(.blue)
+                        .accessibilityIdentifier("scripts.row.update")
+                    }
+                }
             }
             .onDelete { offsets in
-                let ids = offsets.compactMap { scripts.indices.contains($0) ? scripts[$0].id : nil }
-                ids.forEach { ScriptLibrary.remove(id: $0) }
-                scripts = ScriptLibrary.load()
+                deletingScripts = offsets.compactMap { scripts.indices.contains($0) ? scripts[$0] : nil }
             }
         }
         .hakoInsetGroupedListStyle()
@@ -451,27 +491,44 @@ struct ScriptLibraryView: View {
         .hakoPageTitle("Scripts")
         .hakoDetailPageInsets()
         .accessibilityIdentifier("scripts.screen")
+        .hakoDeleteConfirmation(deletingScripts.map(\.label).joined(separator: ", "),
+            isPresented: Binding(get: { !deletingScripts.isEmpty }, set: { if !$0 { deletingScripts = [] } }),
+            message: .copy("These scripts will be deleted. Profiles using them must choose another script before starting."),
+            identifier: "scripts.delete.confirm") { [deletingScripts] in
+                deletingScripts.forEach { ScriptLibrary.remove(id: $0.id) }
+                scripts = ScriptLibrary.load()
+                self.deletingScripts = []
+            }
         .hakoToolbarUnlessInPanel {
             ToolbarItemGroup(placement: .hakoNavigationTrailing) {
+                 
+                 
+                 
+                 
+                Button { Task { await update(updatable) } } label: {
+                    Label("Update All", systemImage: HakoSymbol.arrowClockwise.name)
+                }
+                .disabled(updating)
+                .accessibilityIdentifier("scripts.update.all")
                 HakoEditButton()
-                Button { adding = true } label: {
+                Button { adding = ScriptLibrary.fresh() } label: {
                     Label("Add Script", systemImage: HakoSymbol.plus.name)
                 }
             }
         }
-        .hakoProductModal(item: $editing, role: .page) { script in
-            ScriptEditorView(script: script) { save($0) }
+        .alert(Text(hako: .copy("Update Scripts")), isPresented: $showsUpdateResult) {
+            Button("OK") {}
+        } message: {
+            Text(verbatim: updateMessage)
+        }
+         
+        .hakoProductModal(item: $editing, role: .page, immersive: { _ in true }) { script in
+            ScriptEditorView(script: script, showsImportInMenu: true) { save($0) }
                 .hakoModalPresentation(.page)
         }
-        .hakoProductModal(isPresented: $adding, role: .page) {
-            ScriptEditorView(
-                script: ConfigScript(
-                    id: UUID().uuidString.lowercased(),
-                    label: ScriptLibrary.defaultLabel,
-                    body: ScriptSettings.template
-                )
-            ) { save($0) }
-            .hakoModalPresentation(.page)
+        .hakoProductModal(item: $adding, role: .page, immersive: { _ in true }) { script in
+            ScriptEditorView(script: script, showsImportInMenu: true) { save($0) }
+                .hakoModalPresentation(.page)
         }
     }
 
@@ -479,11 +536,69 @@ struct ScriptLibraryView: View {
         ScriptLibrary.upsert(script)
         scripts = ScriptLibrary.load()
         editing = nil
-        adding = false
+        adding = nil
+    }
+
+     
+     
+     
+    @MainActor
+    private func update(_ targets: [ConfigScript]) async {
+        guard !updating else { return }
+        updating = true
+        defer { updating = false }
+        if targets.isEmpty {
+            updateMessage = HakoCopy.string(
+                "These scripts were imported before the app kept their link, so there is nothing to fetch yet. Import each from its link once more; Update works from then on.",
+                locale: .current)
+            showsUpdateResult = true
+            return
+        }
+        var changed = 0
+        var failed: [String] = []
+        for script in targets {
+            do {
+                let refreshed = try await ScriptImport.refreshed(script)
+                if refreshed.body != script.body {
+                    ScriptLibrary.upsert(refreshed)
+                    changed += 1
+                }
+            } catch {
+                failed.append(script.label)
+            }
+        }
+        scripts = ScriptLibrary.load()
+        updateMessage = failed.isEmpty
+            ? HakoCopy.format("%lld scripts updated.", locale: .current, changed)
+            : HakoCopy.format("%lld scripts updated; these failed: %@", locale: .current, changed, failed.joined(separator: ", "))
+        showsUpdateResult = true
     }
 }
 
-private struct ScriptEditorView: View {
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+private struct ScriptEditorTitle: ViewModifier {
+    let label: String
+    func body(content: Content) -> some View {
+#if os(iOS)
+        content
+            .hakoPageTitle(.verbatim(label), watchAs: "Script")
+            .navigationBarTitleDisplayMode(.inline)
+#else
+        content.hakoPageTitle(.verbatim(label), watchAs: "Script")
+#endif
+    }
+}
+
+struct ScriptEditorView: View {
     let script: ConfigScript
     let save: (ConfigScript) -> Void
 
@@ -517,7 +632,6 @@ private struct ScriptEditorView: View {
     @State private var diagnosticLine: Int?
     @State private var asksAboutUnsaved = false
 
-    @State private var source: ScriptEditorSource = .write
     @State private var importAddress = ""
     @State private var showsFileImporter = false
     @State private var importing = false
@@ -530,122 +644,154 @@ private struct ScriptEditorView: View {
      
      
     @State private var saveResult = ""
+    @State private var typing = false
+    @State private var findPresented = false
+    @State private var showsLineNumbers = CodeEditorLineNumbers.isOn
+    @State private var softWrap = CodeEditorSoftWrap.isOn
+    @State private var renaming = false
+    @State private var renameDraft = ""
+    @State private var importingFromLink = false
+     
+     
+    @State private var sourceURL: String?
+    @State private var showsTestResult = false
+    @State private var showsSaveResult = false
+    @State private var showsImportError = false
     private let originalBody: String
 
-    init(script: ConfigScript, save: @escaping (ConfigScript) -> Void) {
+     
+     
+    let showsImportInMenu: Bool
+
+    init(script: ConfigScript, showsImportInMenu: Bool = false, save: @escaping (ConfigScript) -> Void) {
         self.script = script
+        self.showsImportInMenu = showsImportInMenu
         self.save = save
         originalBody = script.body
         _label = State(initialValue: script.label)
         _bodyText = State(initialValue: script.body)
+        _sourceURL = State(initialValue: script.sourceURL)
     }
 
+     
+     
+     
+     
+     
     var body: some View {
         HakoFeatureNavigationContainer {
-            VStack(spacing: 0) {
-            sourceBar
-            Form {
-                Section {
-                    TextField("Script name", text: $label)
-                        .accessibilityIdentifier("scripts.editor.name")
-                    if !saveResult.isEmpty {
-                        HakoStatusMessage(text: .copy(saveResult), kind: .error)
-                            .accessibilityIdentifier("scripts.editor.save.result")
-                    }
-                } header: {
-                    Text("Name")
+            editor
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(HakoTheme.canvas.ignoresSafeArea())
+                .modifier(HakoBarFadesWhileTyping(typing: $typing))
+                .modifier(ScriptEditorTitle(label: label))
+                .fileImporter(
+                    isPresented: $showsFileImporter,
+                    allowedContentTypes: [.javaScript, .plainText, .text],
+                    allowsMultipleSelection: false
+                ) { outcome in
+                    importFromFile(outcome)
                 }
-                switch source {
-                case .write: EmptyView()
-                case .url: urlPane
-                case .file: filePane
-                }
-                Section("Script") {
-                    CodeEditorPanel(
-                        text: $bodyText,
-                        language: .javascript,
-                        minHeight: 320,
-                        diagnosticLine: diagnosticLine
-                    )
-                }
-                Section {
-                     
-                     
-                     
-                     
-                     
-                    Button("Test Run") { Task { await test() } }
-                        .accessibilityIdentifier("scripts.editor.test")
-                    if !result.isEmpty {
-                        HakoStatusMessage(
-                            text: .copy(result),
-                            kind: result.hasPrefix("OK") ? .success : .error
-                        )
-                        .accessibilityIdentifier("scripts.editor.result")
-                    }
-                }
-            }
-            }
-            .hakoPageTitle("Script")
-            .fileImporter(
-                isPresented: $showsFileImporter,
-                allowedContentTypes: [.javaScript, .plainText, .text],
-                allowsMultipleSelection: false
-            ) { outcome in
-                importFromFile(outcome)
-            }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    if !insideProductModal {
-                        Button("Cancel") {
-                            switch UnsavedEditPolicy.decision(
-                                original: originalBody,
-                                current: bodyText
-                            ) {
-                            case .leave: dismissPresentation()
-                            case .offerToSave: asksAboutUnsaved = true
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        if !insideProductModal {
+                            Button("Cancel") {
+                                switch UnsavedEditPolicy.decision(
+                                    original: originalBody,
+                                    current: bodyText
+                                ) {
+                                case .leave: dismissPresentation()
+                                case .offerToSave: asksAboutUnsaved = true
+                                }
                             }
+                            .accessibilityIdentifier("scripts.editor.cancel")
                         }
-                        .accessibilityIdentifier("scripts.editor.cancel")
+                    }
+                    ToolbarItemGroup(placement: .confirmationAction) {
+                        if !insideProductModal {
+                            Menu {
+                                moreMenu
+                            } label: {
+                                Image(systemName: HakoSymbol.ellipsisCircle.name)
+                            }
+                            .accessibilityLabel("More")
+                            .accessibilityIdentifier("scripts.editor.more")
+                            Button("Save") {
+                                persist()
+                            }
+                            .disabled(label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityIdentifier("scripts.editor.save")
+                        }
                     }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    if !insideProductModal {
-                        Button("Save") {
-                            persist()
-                        }
-                        .disabled(label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .accessibilityIdentifier("scripts.editor.save")
+                .hakoProductModalRoot(title: "Script")
+                .task { await loadActiveProfileName() }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if insideProductModal {
+                        HakoModalActionBar(
+                            primaryTitle: "Save",
+                            primaryDisabled: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                            onPrimary: { persist() }
+                        )
                     }
                 }
-            }
-            .hakoProductModalRoot(title: "Script")
-            .task { await loadActiveProfileName() }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if insideProductModal {
-                    HakoModalActionBar(
-                        primaryTitle: "Save",
-                        primaryDisabled: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                        onPrimary: persist
-                    )
+                .alert("Rename…", isPresented: $renaming) {
+                    TextField("Script name", text: $renameDraft)
+                        .accessibilityIdentifier("scripts.editor.name")
+                    Button("OK") {
+                        let trimmed = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty { label = trimmed }
+                    }
+                    Button("Cancel", role: .cancel) {}
                 }
-            }
+                .alert("Test Run", isPresented: $showsTestResult) {
+                    Button("OK") {}
+                } message: {
+                    Text(verbatim: result)
+                }
+                .alert("Cannot Save", isPresented: $showsSaveResult) {
+                    Button("OK") {}
+                } message: {
+                    Text(verbatim: saveResult)
+                }
+                .alert("Import Failed", isPresented: $showsImportError) {
+                    Button("OK") {}
+                } message: {
+                    Text(verbatim: importResult)
+                }
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                .alert("Import from URL…", isPresented: $importingFromLink) {
+                    TextField("Script URL", text: $importAddress)
+#if !os(macOS)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+#endif
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("scripts.editor.import.address")
+                    Button("Import") {
+                        Task { @MainActor in
+                            await importFromAddress()
+                            if !importResult.isEmpty { showsImportError = true }
+                        }
+                    }
+                    .accessibilityIdentifier("scripts.editor.import.url")
+                    Button("Cancel", role: .cancel) {}
+                }
         }
         .hakoStackNavigationViewStyle()
-         
-         
-         
-         
-         
-         
         .hakoRegistersDeparture(
             isDirty: UnsavedEditPolicy.decision(
                 original: originalBody,
                 current: bodyText
             ) == .offerToSave,
             save: { completion in
-                persist()
-                completion(true)
+                persist(then: completion)
             },
             discard: { bodyText = originalBody }
         )
@@ -664,6 +810,100 @@ private struct ScriptEditorView: View {
         .hakoCapturesDismiss(dismiss)
     }
 
+    private var editor: some View {
+        CodeEditorPanel(
+            text: $bodyText,
+            language: .javascript,
+            minHeight: 200,
+            diagnosticLine: diagnosticLine,
+            expandsVertically: true,
+            chrome: .minimal,
+            showsLineNumbers: showsLineNumbers,
+            softWrap: softWrap,
+            findPresented: $findPresented,
+            typing: $typing
+        )
+        .padding(.horizontal, HakoTheme.Spacing.standard)
+        .padding(.vertical, HakoTheme.Spacing.compact)
+    }
+
+    @ViewBuilder
+    private var moreMenu: some View {
+        Button {
+            renameDraft = label
+            renaming = true
+        } label: {
+            Label("Rename…", systemImage: HakoSymbol.pencil.name)
+        }
+        .accessibilityIdentifier("scripts.editor.rename")
+        Button {
+            findPresented = true
+        } label: {
+            Label("Find", systemImage: HakoSymbol.magnifyingglass.name)
+        }
+        .keyboardShortcut("f", modifiers: .command)
+        .accessibilityIdentifier("scripts.editor.find")
+        Button {
+            showsLineNumbers.toggle()
+            CodeEditorLineNumbers.isOn = showsLineNumbers
+        } label: {
+            Label(
+                "Line Numbers",
+                systemImage: showsLineNumbers ? HakoSymbol.checkmark.name : HakoSymbol.listBullet.name
+            )
+        }
+        .accessibilityIdentifier("scripts.editor.lineNumbers")
+        Button {
+            softWrap.toggle()
+            CodeEditorSoftWrap.isOn = softWrap
+        } label: {
+            Label(
+                "Wrap Long Lines",
+                systemImage: softWrap ? HakoSymbol.checkmark.name : HakoSymbol.arrowRightToLine.name
+            )
+        }
+        .accessibilityIdentifier("scripts.editor.softWrap")
+        if showsImportInMenu {
+            Divider()
+            if let sourceURL, !sourceURL.isEmpty {
+                 
+                 
+                Button {
+                    importResult = ""
+                    importAddress = sourceURL
+                    Task { @MainActor in await importFromAddress() }
+                } label: {
+                    Label("Update", systemImage: HakoSymbol.arrowClockwise.name)
+                }
+                .disabled(importing)
+                .accessibilityIdentifier("scripts.editor.update")
+            }
+            Button {
+                importResult = ""
+                importingFromLink = true
+            } label: {
+                Label("Import from URL…", systemImage: HakoSymbol.link.name)
+            }
+            .accessibilityIdentifier("scripts.editor.import.link")
+            Button {
+                showsFileImporter = true
+            } label: {
+                Label("Import File…", systemImage: HakoSymbol.squareAndArrowDown.name)
+            }
+            .accessibilityIdentifier("scripts.editor.import.file")
+        }
+        Divider()
+        Button {
+            Task { await test() }
+        } label: {
+            Label("Test Run", systemImage: HakoSymbol.play.name)
+        }
+        .accessibilityIdentifier("scripts.editor.test")
+    }
+
+     
+     
+     
      
      
      
@@ -716,110 +956,6 @@ private struct ScriptEditorView: View {
      
      
      
-    private var sourceBar: some View {
-#if os(macOS)
-        HStack(spacing: 2) {
-            sourceSegment(.write, "Write", identifier: "scripts.editor.source.write")
-            sourceSegment(.url, "URL", identifier: "scripts.editor.source.url")
-            sourceSegment(.file, "File", identifier: "scripts.editor.source.file")
-        }
-        .padding(2)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.primary.opacity(0.07))
-        )
-        .padding(.horizontal, 18)
-        .padding(.top, 14)
-        .padding(.bottom, 2)
-#else
-        Picker(HakoCopy.key("Source"), selection: $source) {
-            Text(HakoCopy.key("Write")).tag(ScriptEditorSource.write)
-            Text(HakoCopy.key("URL")).tag(ScriptEditorSource.url)
-            Text(HakoCopy.key("File")).tag(ScriptEditorSource.file)
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .accessibilityIdentifier("scripts.editor.source")
-        .padding(.horizontal, 18)
-        .padding(.top, 14)
-        .padding(.bottom, 2)
-#endif
-    }
-
-#if os(macOS)
-    private func sourceSegment(
-        _ value: ScriptEditorSource,
-        _ key: String,
-        identifier: String
-    ) -> some View {
-        Button { source = value } label: {
-            Text(HakoCopy.key(key))
-                .font(.callout.weight(source == value ? .semibold : .regular))
-                .frame(maxWidth: .infinity, minHeight: 26)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background {
-            if source == value {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color(nsColor: .controlColor))
-                    .shadow(color: .black.opacity(0.18), radius: 1, y: 1)
-            }
-        }
-        .accessibilityIdentifier(identifier)
-        .accessibilityAddTraits(source == value ? .isSelected : [])
-    }
-#endif
-
-    private var urlPane: some View {
-        Section {
-             
-             
-             
-            TextField(
-                HakoCopy.key("Script URL"),
-                text: $importAddress,
-                prompt: Text(verbatim: "https://example.com/script.js")
-            )
-                .textContentType(.URL)
-#if !os(macOS)
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-#endif
-                .autocorrectionDisabled()
-                .accessibilityIdentifier("scripts.editor.import.address")
-            Button(importing ? "Importing…" : "Import") {
-                Task { @MainActor in await importFromAddress() }
-            }
-            .disabled(importing || importAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .accessibilityIdentifier("scripts.editor.import.url")
-            if !importResult.isEmpty {
-                HakoStatusMessage(text: .copy(importResult), kind: .error)
-                    .accessibilityIdentifier("scripts.editor.import.result")
-            }
-        } footer: {
-            Text("Paste the link to the script file. Its text replaces what is in the editor.")
-        }
-    }
-
-    private var filePane: some View {
-        Section {
-            Button("Choose File…") { showsFileImporter = true }
-                .accessibilityIdentifier("scripts.editor.import.file")
-            if !importResult.isEmpty {
-                HakoStatusMessage(text: .copy(importResult), kind: .error)
-                    .accessibilityIdentifier("scripts.editor.import.result")
-            }
-        } footer: {
-            Text("Pick a .js file. Its text replaces what is in the editor.")
-        }
-    }
-
-     
-     
-     
-     
-     
     @MainActor
     private func importFromAddress() async {
         importing = true
@@ -828,6 +964,7 @@ private struct ScriptEditorView: View {
         do {
             let text = try await ScriptImport.body(at: importAddress)
             bodyText = text
+            sourceURL = importAddress.trimmingCharacters(in: .whitespacesAndNewlines)
             result = ""
             diagnosticLine = nil
             if label == ScriptLibrary.defaultLabel || label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -835,7 +972,6 @@ private struct ScriptEditorView: View {
                let suggested = ScriptImport.suggestedName(for: url) {
                 label = suggested
             }
-            source = .write
         } catch {
             importResult = (error as NSError).localizedDescription
         }
@@ -860,18 +996,23 @@ private struct ScriptEditorView: View {
                 bodyText = text
                 result = ""
                 diagnosticLine = nil
-                source = .write
             } catch {
                 importResult = ScriptImportError.notText.localizedDescription
             }
         case let .failure(error):
             importResult = (error as NSError).localizedDescription
         }
+        showsImportError = !importResult.isEmpty
     }
 
-    private func test() async { _ = validate(name: await loadActiveProfileName()) }
+    private func test() async {
+        _ = validate(name: await loadActiveProfileName())
+        showsTestResult = !result.isEmpty
+    }
 
-    private func persist() {
+    private func persist(then: ((Bool) -> Void)? = nil) {
+         
+        let source: ScriptEditorSource = importAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .write : .url
         switch ScriptEditorSaveIntent.decide(source: source, address: importAddress) {
         case .importThenSave:
              
@@ -885,30 +1026,152 @@ private struct ScriptEditorView: View {
                 await importFromAddress()
                  
                  
-                guard importResult.isEmpty else { return }
-                commit()
+                guard importResult.isEmpty else { then?(false); return }
+                finish(commit(), then)
             }
         case .save:
-            commit()
+            finish(commit(), then)
         }
     }
 
-    private func commit() {
+     
+    @discardableResult
+    private func commit() -> Bool {
         guard let edited = ScriptLibrary.editedScript(
             id: script.id,
             label: label,
             body: bodyText,
+            sourceURL: sourceURL,
             existing: ScriptLibrary.load()
         ) else {
             saveResult = "Another script already uses that name."
-            return
+            showsSaveResult = true
+            return false
         }
         saveResult = ""
         save(edited)
-        dismissPresentation()
+        return true
+    }
+
+     
+     
+     
+     
+    private func finish(_ saved: Bool, _ then: ((Bool) -> Void)?) {
+        if let then { then(saved) } else if saved { dismissPresentation() }
     }
 
     private func dismissPresentation() {
         (productModalDismiss ?? { dismiss() })()
+    }
+}
+
+ 
+ 
+ 
+enum ScriptAddOutcome {
+     
+     
+    @discardableResult
+    static func save(label: String, body: String, sourceURL: String? = nil,
+                     in library: UserDefaults) throws -> ConfigScript {
+        let existing = ScriptLibrary.load(from: library)
+        let id = UUID().uuidString
+        var candidate = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate.isEmpty { candidate = ScriptLibrary.defaultLabel }
+        var attempt = 2
+        var script = ScriptLibrary.editedScript(id: id, label: candidate, body: body, sourceURL: sourceURL, existing: existing)
+        while script == nil, attempt < 100 {
+            script = ScriptLibrary.editedScript(id: id, label: "\(candidate) \(attempt)", body: body, sourceURL: sourceURL, existing: existing)
+            attempt += 1
+        }
+        guard let script else { throw ScriptImportError.empty }
+        ScriptLibrary.upsert(script, in: library)
+        return script
+    }
+
+    static func fromFile(_ outcome: Result<[URL], Error>, in library: UserDefaults) throws -> ConfigScript {
+        switch outcome {
+        case let .success(urls):
+            guard let url = urls.first else { throw ScriptImportError.empty }
+             
+             
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { throw ScriptImportError.notText }
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ScriptImportError.empty }
+            return try save(label: url.deletingPathExtension().lastPathComponent, body: text, in: library)
+        case let .failure(error):
+            throw error
+        }
+    }
+
+    static func fromLink(_ address: String, in library: UserDefaults) async throws -> ConfigScript {
+        let text = try await ScriptImport.body(at: address)
+        let label = (try? ScriptImport.address(address)).flatMap(ScriptImport.suggestedName(for:))
+            ?? ScriptLibrary.defaultLabel
+        return try save(label: label, body: text,
+                        sourceURL: address.trimmingCharacters(in: .whitespacesAndNewlines), in: library)
+    }
+}
+
+ 
+ 
+struct ScriptManualPage: View {
+    let library: UserDefaults
+    let close: () -> Void
+    let added: (ConfigScript) -> Void
+
+    @Environment(\.hakoInsideProductModalPresentation) private var insideProductModal
+    @State private var name = ""
+    @State private var bodyText = ScriptLibrary.fresh().body
+    @State private var failure = ""
+    @State private var showsFailure = false
+
+    var body: some View {
+        HakoFeatureNavigationContainer {
+            Form {
+                Section {
+                    TextField("Script name", text: $name)
+                        .accessibilityIdentifier("scripts.add.name")
+                }
+                Section {
+                    CodeEditorPanel(text: $bodyText, language: .javascript, minHeight: 240, diagnosticLine: nil)
+                }
+            }
+            .hakoPageTitle("Add Script")
+            .hakoToolbarUnlessInPanel {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { close() }
+                        .accessibilityIdentifier("scripts.add.cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("scripts.add.save")
+                }
+            }
+        }
+         
+         
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if insideProductModal {
+                HakoModalActionBar(
+                    primaryTitle: "Save",
+                    primaryDisabled: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    onPrimary: { save() }
+                )
+            }
+        }
+        .alert("Import Failed", isPresented: $showsFailure) {
+            Button("OK") {}
+        } message: {
+            Text(verbatim: failure)
+        }
+    }
+
+    private func save() {
+        do { added(try ScriptAddOutcome.save(label: name, body: bodyText, in: library)) }
+        catch { failure = (error as NSError).localizedDescription; showsFailure = true }
     }
 }

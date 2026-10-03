@@ -43,7 +43,7 @@ struct CustomProxyGroupsEditor: View {
                 Section {
                 HakoEmptyState(
                     title: "No Custom Groups",
-                    message: "Add a group or return and use Quick Fill.",
+                    message: "",
                     symbol: .point3ConnectedTrianglepathDotted
                 )
                 .listRowSeparator(.hidden)
@@ -94,7 +94,7 @@ struct CustomProxyGroupsEditor: View {
             if groups.isEmpty {
                 HakoEmptyState(
                     title: "No Custom Groups",
-                    message: "Add a group or return and use Quick Fill.",
+                    message: "",
                     symbol: .point3ConnectedTrianglepathDotted
                 )
                 .listRowSeparator(.hidden)
@@ -166,8 +166,9 @@ struct CustomProxyGroupsEditor: View {
         }
     }
 }
-private struct CustomProxyGroupEditor: View {
+struct CustomProxyGroupEditor: View {
     let save: (CustomProxyGroup) -> Void
+    let validateChange: ((CustomProxyGroup) -> String?)?
     let existingNames: Set<String>
     let validationContext: CustomGroupValidationContext
     let profileProxyNames: [String]
@@ -199,12 +200,14 @@ private struct CustomProxyGroupEditor: View {
                 nodeNames: [], groupNames: [],
                 providerNames: [], siblingGroupNames: []
             ),
+        validateChange: ((CustomProxyGroup) -> String?)? = nil,
         save: @escaping (CustomProxyGroup) -> Void
     ) {
         self.existingNames = existingNames
         self.validationContext = validationContext
         self.profileProxyNames = profileProxyNames
         self.save = save
+        self.validateChange = validateChange
         _group = State(initialValue: group)
         _interval = State(initialValue: group.interval.map(String.init) ?? "")
         _timeout = State(initialValue: group.timeout.map(String.init) ?? "")
@@ -233,8 +236,6 @@ private struct CustomProxyGroupEditor: View {
                 if let validationError = group.validationError {
                     Section {
                         HakoStatusMessage(text: .copy(validationError.localizedDescription), kind: .error)
-                    } footer: {
-                        Text("Choose a supported group type. Proxy chaining is configured with dialer-proxy on each proxy.")
                     }
                 }
 
@@ -293,8 +294,7 @@ private struct CustomProxyGroupEditor: View {
                         }
                         .accessibilityIdentifier("custom.proxy-group.strategy")
                     default:
-                        Text("Routes are tried in the order shown above.")
-                            .foregroundStyle(.secondary)
+                        EmptyView()
                     }
                 } header: {
                     Text("Selection")
@@ -350,8 +350,6 @@ private struct CustomProxyGroupEditor: View {
                     }
                 } header: {
                     Text("Icon")
-                } footer: {
-                    Text("Recent icons are stored locally for reuse. An emoji or a bundled name is drawn here; a URL is kept with the group but never loaded, so a subscription cannot learn when you open the app.")
                 }
 
                 if !error.isEmpty {
@@ -411,10 +409,7 @@ private struct CustomProxyGroupEditor: View {
         case .remote(let host):
             echoRow("Image on") { Text(verbatim: host) }
         case .unrecognized:
-            Text("Saved with the group, but nothing draws it.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("custom.proxy-group.icon.echo")
+            EmptyView()
         case .none:
             EmptyView()
         }
@@ -530,6 +525,7 @@ private struct CustomProxyGroupEditor: View {
         group.timeout = Int(timeout)
         group.maxFailedTimes = Int(maxFailedTimes)
         group.tolerance = Int(tolerance)
+        if let message = validateChange?(group) { error = message; return }
         save(group)
         dismissPresentation()
     }
@@ -569,7 +565,7 @@ struct CustomRulesEditor: View {
                 Section {
                 HakoEmptyState(
                     title: "No Custom Rules",
-                    message: "Add a rule or return and use Quick Fill.",
+                    message: "",
                     symbol: .listBulletRectangle
                 )
                 .listRowSeparator(.hidden)
@@ -603,7 +599,7 @@ struct CustomRulesEditor: View {
             if rules.isEmpty {
                 HakoEmptyState(
                     title: "No Custom Rules",
-                    message: "Add a rule or return and use Quick Fill.",
+                    message: "",
                     symbol: .listBulletRectangle
                 )
                 .listRowSeparator(.hidden)

@@ -42,6 +42,8 @@ final class HakoTVTunnelController: ObservableObject {
      
      
     @Published var lastActivation: Activation?
+    @Published private(set) var isApplyingIPStack = false
+    let ipStackDefaults: UserDefaults
 
     struct Activation: Equatable {
         let subscriptionID: HakoTVSubscription.ID
@@ -52,6 +54,12 @@ final class HakoTVTunnelController: ObservableObject {
 
     static let vpnProfileTitle = "Clash"
     static let vpnProfileDescription = "Clash by Hako"
+     
+     
+     
+     
+     
+    static let providerNotLaunchedMessage = String(localized: "Connection failed. Select Reinstall VPN Profile.")
 
      
      
@@ -127,9 +135,16 @@ final class HakoTVTunnelController: ObservableObject {
     private var refreshTask: Task<Void, Never>?
      
      
+     
+    private var reinstallInFlight = false
+     
+     
     private var startGeneration = 0
     private var groupOrder: [String] = []
     private var lastKnownStatus: NEVPNStatus = .invalid
+     
+    private var startFailureTracker = VPNStartFailureTracker()
+    private let clock: @MainActor () -> Date
     private var ipcGeneration = HakoTVIPCGeneration(active: false)
     private var observedIPCProfile: ObjectIdentifier?
     private var observedIPCSession: ObjectIdentifier?
@@ -155,13 +170,17 @@ final class HakoTVTunnelController: ObservableObject {
         loadProfiles: @escaping ProfileLoader = { try await NETunnelProviderManager.loadAllFromPreferences() },
         makeProfile: @escaping ProfileMaker = { NETunnelProviderManager() },
         preferencesTimeout: TimeInterval = 15,
+        ipStackDefaults: UserDefaults = UserDefaults(suiteName: HakoAppIdentifiers.appGroup) ?? .standard,
         messageReader: MessageReader? = nil,
         observationClock: @escaping @MainActor () -> HakoTVObservation.Moment = { .init(date: Date()) },
+        clock: @escaping @MainActor () -> Date = { Date() },
         pollSleep: @escaping @MainActor () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }
     ) {
+        self.ipStackDefaults = ipStackDefaults
         self.container = container
         self.messageReader = messageReader
         self.observationClock = observationClock
+        self.clock = clock
         self.pollSleep = pollSleep
         self.session = session
         self.autoConnect = autoConnect
@@ -216,7 +235,7 @@ final class HakoTVTunnelController: ObservableObject {
      
      
     func connect(subscription: HakoTVSubscription) async {
-        guard connectTask == nil else { return }
+        guard connectTask == nil, !isApplyingIPStack else { return }
          
          
          
@@ -241,18 +260,21 @@ final class HakoTVTunnelController: ObservableObject {
 
     private func performConnect(_ subscription: HakoTVSubscription) async {
         state.issue = nil
+        state.vpnAuthorization = nil
+        startGeneration += 1
         do {
+            let ipStack = try IPStackSettings.load(from: ipStackDefaults)
             if needsActivation(for: subscription) {
                 state.pipelinePhase = .downloading
                 defer { state.pipelinePhase = nil }
-                try await activate(subscription) { [weak self] phase in self?.state.pipelinePhase = phase }
+                try await activate(subscription, settings: ipStack) { [weak self] phase in self?.state.pipelinePhase = phase }
             }
              
              
             if let container, let store = try? ConfigResourceStore(containerURL: container),
                let expected = try? store.activeIdentity() {
                 do {
-                    _ = try await HakoTVConfigPipeline(container: container, session: session).recoverRules(expected: expected)
+                    _ = try await HakoTVConfigPipeline(container: container, session: session, settings: ipStack).recoverRules(expected: expected)
                     loadActiveConfigurationFacts()
                 } catch is CancellationError {
                     throw CancellationError()
@@ -263,14 +285,22 @@ final class HakoTVTunnelController: ObservableObject {
                 }
             }
             try Task.checkCancellation()
-            try await start()
+            try await start(settings: ipStack)
+        } catch HakoTVProfileCoordinator.StartError.permissionNotGranted {
+            state.pipelinePhase = nil
+            state.issue = nil
+            state.vpnAuthorization = .notCompleted
+            startRequested = false
+            statusChanged()
         } catch is CancellationError {
+            state.vpnAuthorization = nil
              
              
             state.pipelinePhase = nil
             HakoLogStore.shared.append("tv connect cancelled", stream: .app)
             statusChanged()
         } catch {
+            state.vpnAuthorization = nil
             state.pipelinePhase = nil
             report(issue: error.localizedDescription)
             HakoLogStore.shared.append("tv connect failed  reason=\(error.localizedDescription)", stream: .app, level: .warning)
@@ -294,6 +324,29 @@ final class HakoTVTunnelController: ObservableObject {
         refreshTask = task
         await task.value
         refreshTask = nil
+    }
+
+     
+     
+     
+     
+     
+    func updateScript(subscription: HakoTVSubscription, isCurrent: Bool) async {
+        guard connectTask == nil, refreshTask == nil else { return }
+        guard let container else {
+            state.refresh = .failed(subscription.id, ControllerError.appGroupUnavailable.localizedDescription)
+            return
+        }
+        state.refresh = .updating(subscription.id, .downloading)
+        do {
+            _ = try await HakoTVConfigPipeline(container: container, session: session).updateScript(for: subscription)
+            state.refresh = nil
+        } catch {
+            state.refresh = .failed(subscription.id, error.localizedDescription)
+            HakoLogStore.shared.append("tv script update failed  reason=\(error.localizedDescription)", stream: .app, level: .warning)
+            return
+        }
+        if isCurrent { await refresh(subscription: subscription) }
     }
 
     private func performRefresh(_ subscription: HakoTVSubscription) async {
@@ -357,8 +410,12 @@ final class HakoTVTunnelController: ObservableObject {
     func disconnect() async {
         replaceIPCGeneration(active: false)
         startRequested = false
+        startFailureTracker.cancelStart()
+        state.vpnAuthorization = nil
+        startGeneration += 1
         stopRequested = true
         stopEpoch += 1
+        let disarm = coordinator.requestStop { $0.stopVPNTunnel() }
         if let connectTask {
             connectTask.cancel()
             await connectTask.value
@@ -371,11 +428,84 @@ final class HakoTVTunnelController: ObservableObject {
         }
          
          
-         
-         
-         
-        await coordinator.stop { $0.stopVPNTunnel() }
+        await disarm.value
         statusChanged()
+    }
+
+     
+     
+     
+     
+     
+    func reinstallVPNProfile() async {
+        guard connectTask == nil, refreshTask == nil, !isApplyingIPStack, !reinstallInFlight,
+              !state.isConnected, state.stage != .connecting else { return }
+        reinstallInFlight = true
+        defer { reinstallInFlight = false }
+        startFailureTracker.cancelStart()
+        state.issue = nil
+        state.vpnAuthorization = nil
+        let epoch = stopEpoch
+        do {
+            let ipStack = try IPStackSettings.load(from: ipStackDefaults)
+            try await coordinator.commitStart(
+                replacingInstalled: true,
+                configure: { try Self.configure($0, ipStack: ipStack) },
+                shouldAbort: { [weak self] in
+                    guard let self else { return true }
+                    return self.stopEpoch != epoch
+                },
+                onWaiting: { [weak self] in
+                    guard let self, self.stopEpoch == epoch else { return }
+                    self.state.vpnAuthorization = .waiting
+                }
+            )
+            state.vpnAuthorization = nil
+             
+             
+            startFailureTracker.forgetInstantFailures()
+            HakoLogStore.shared.append("tv vpn profile reinstalled", stream: .app)
+        } catch HakoTVProfileCoordinator.StartError.permissionNotGranted {
+             
+             
+            state.vpnAuthorization = .notCompleted
+        } catch is CancellationError {
+            state.vpnAuthorization = nil
+            HakoLogStore.shared.append("tv vpn profile reinstall cancelled", stream: .app)
+        } catch {
+            state.vpnAuthorization = nil
+            report(issue: error.localizedDescription)
+            HakoLogStore.shared.append("tv vpn profile reinstall failed  reason=\(error.localizedDescription)", stream: .app, level: .warning)
+        }
+        statusChanged()
+    }
+
+    func applyIPStack(_ next: IPStackSettings) async throws {
+        guard !isApplyingIPStack, connectTask == nil, refreshTask == nil,
+              state.stage != .connecting, state.stage != .disconnecting else {
+            throw IPStackSettingsApplicationError.operationInProgress
+        }
+        guard try next != IPStackSettings.load(from: ipStackDefaults) else { return }
+        isApplyingIPStack = true
+        defer { isApplyingIPStack = false }
+        let epoch = stopEpoch
+        try await coordinator.applyIPStack(next, defaults: ipStackDefaults)
+        guard stopEpoch == epoch, manager?.status == .connected || manager?.status == .reasserting else { return }
+        do {
+            state.issue = nil
+            startRequested = false
+            stopRequested = true
+            replaceIPCGeneration(active: false)
+            await coordinator.stop { $0.stopVPNTunnel() }
+            try await waitUntilDown()
+            guard stopEpoch == epoch else { throw CancellationError() }
+            stopRequested = false
+            try await start(settings: next)
+        } catch {
+            if error is CancellationError || stopEpoch != epoch { throw CancellationError() }
+            throw ControllerError.ipStackRestartFailed(error.localizedDescription)
+        }
+
     }
 
      
@@ -510,6 +640,35 @@ final class HakoTVTunnelController: ObservableObject {
      
      
      
+    func unpin(group: String) async {
+        guard state.isConnected else {
+            state.unpin(group: group)
+            return
+        }
+        let generation = ipcGeneration
+        controlRevision &+= 1
+        let revision = controlRevision
+        let epoch = presentationEpoch
+        do {
+            state.observations.proxies.waitForUpdate()
+            let reply = try await send(["cmd": "unfix", "group": group], expectedGeneration: generation)
+            guard generation.isValid, revision == controlRevision else { return }
+            guard Self.isOK(reply) else { throw Self.replyError(reply) }
+            state.issue = nil
+            if presentation.active && presentationEpoch == epoch {
+                await refreshProxies()
+            }
+        } catch {
+            HakoLogStore.shared.append("tv unpin outcome  reason=\(error.localizedDescription)", stream: .app, level: .warning)
+            guard generation.isValid, revision == controlRevision else { return }
+            report(issue: error.localizedDescription)
+        }
+    }
+
+     
+     
+     
+     
      
      
      
@@ -537,13 +696,16 @@ final class HakoTVTunnelController: ObservableObject {
         )
         guard state.isConnected, sweepingMembers.isEmpty else { return }
         let generation = ipcGeneration
-        let previousLatency = group.members.reduce(into: [String: HakoProxyLatencyState]()) {
+         
+         
+        let members = HakoTVNodesScreen.sweepMembers(of: group, state: state)
+        let previousLatency = members.reduce(into: [String: HakoProxyLatencyState]()) {
             $0[$1.name] = state.latency[$1.name]
         }
-        sweepingMembers = Set(group.members.map(\.name))
+        sweepingMembers = Set(members.map(\.name))
         defer {
             if generation === ipcGeneration {
-                for member in group.members where state.latency[member.name] == .testing {
+                for member in members where state.latency[member.name] == .testing {
                     state.latency[member.name] = previousLatency[member.name] ?? .untested
                 }
                 sweepingMembers = []
@@ -560,7 +722,7 @@ final class HakoTVTunnelController: ObservableObject {
          
          
         var measured = 0
-        for member in group.members {
+        for member in members {
             guard generation.isValid else { return }
             do {
                 let reply = try await send(["cmd": "urltest", "name": member.name], expectedGeneration: generation)
@@ -706,6 +868,7 @@ final class HakoTVTunnelController: ObservableObject {
         state.ruleProvidersTotal = 0
         state.ruleProvidersLoaded = 0
         state.proxyGroups = []
+        state.hiddenProxyGroups = []
         state.nodeCount = 0
         state.nodeGroup = ""
         state.nodeName = ""
@@ -715,9 +878,9 @@ final class HakoTVTunnelController: ObservableObject {
      
      
      
-    private func activate(_ subscription: HakoTVSubscription, report: @escaping @MainActor (HakoTVConfigPipeline.Phase) -> Void) async throws {
+    private func activate(_ subscription: HakoTVSubscription, settings: IPStackSettings? = nil, report: @escaping @MainActor (HakoTVConfigPipeline.Phase) -> Void) async throws {
         guard let container else { throw ControllerError.appGroupUnavailable }
-        let pipeline = HakoTVConfigPipeline(container: container, session: session)
+        let pipeline = HakoTVConfigPipeline(container: container, session: session, settings: settings)
         let activation = try await pipeline.activate(subscription: subscription) { phase in
             Task { @MainActor in report(phase) }
         }
@@ -777,6 +940,7 @@ final class HakoTVTunnelController: ObservableObject {
         state.dnsFallback = facts.dnsFallback
         state.dnsDefaultNameservers = facts.dnsDefaultNameservers
         state.groupCount = facts.proxyGroupNames.count
+        state.easyTierNodeNames = facts.easyTierNodeNames
         state.outboundMode = HakoTVOutboundMode(rawValue: facts.mode) ?? .rule
         state.geodataSource = "Bundled"
         state.providers = catalog.entries
@@ -791,6 +955,9 @@ final class HakoTVTunnelController: ObservableObject {
         if !state.isConnected {
             state.observations.proxies.useConfiguration()
             state.proxyGroups = facts.proxyGroups
+             
+             
+            state.hiddenProxyGroups = []
             state.nodeCount = facts.nodeCount
             if let first = facts.proxyGroups.first {
                 state.nodeGroup = first.name
@@ -801,7 +968,7 @@ final class HakoTVTunnelController: ObservableObject {
 
      
 
-    private func start() async throws {
+    private func start(settings: IPStackSettings? = nil) async throws {
          
          
          
@@ -809,18 +976,19 @@ final class HakoTVTunnelController: ObservableObject {
          
          
         let epoch = stopEpoch
+        let ipStackSnapshot = try settings ?? IPStackSettings.load(from: ipStackDefaults)
+        if let container {
+            try AppCoreSetup.ensure(container: container, settings: ipStackSnapshot)
+        }
         try await coordinator.commitStart(
-            configure: { profile in
-                let tunnelProtocol = (profile.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
-                tunnelProtocol.providerBundleIdentifier = HakoAppIdentifiers.tvPacketTunnelExtensionBundleID
-                tunnelProtocol.serverAddress = Self.vpnProfileDescription
-                profile.protocolConfiguration = tunnelProtocol
-                profile.localizedDescription = Self.vpnProfileTitle
-                profile.isEnabled = true
-            },
+            configure: { try Self.configure($0, ipStack: ipStackSnapshot) },
             shouldAbort: { [weak self] in
                 guard let self else { return true }
                 return self.stopEpoch != epoch
+            },
+            onWaiting: { [weak self] in
+                guard let self, self.stopEpoch == epoch else { return }
+                self.state.vpnAuthorization = .waiting
             }
         )
          
@@ -829,9 +997,18 @@ final class HakoTVTunnelController: ObservableObject {
         if stopEpoch != epoch || Task.isCancelled { throw CancellationError() }
         guard let profile = coordinator.current else { throw ControllerError.tunnelDidNotStart }
         replaceIPCGeneration(active: false)
+        state.vpnAuthorization = nil
         startRequested = true
         startGeneration += 1
-        try profile.startVPNTunnel()
+         
+         
+        startFailureTracker.beginStart(at: clock())
+        do {
+            try profile.startVPNTunnel()
+        } catch {
+            startFailureTracker.cancelStart()
+            throw error
+        }
         HakoLogStore.shared.append("tv vpn start requested", stream: .app)
          
          
@@ -840,9 +1017,37 @@ final class HakoTVTunnelController: ObservableObject {
         state.stage = .connecting
     }
 
+     
+     
+     
+     
+    private static func configure(_ profile: any HakoTVSystemProfile, ipStack: IPStackSettings) throws {
+        let tunnelProtocol = (profile.protocolConfiguration?.copy() as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
+        tunnelProtocol.providerBundleIdentifier = HakoAppIdentifiers.tvPacketTunnelExtensionBundleID
+        tunnelProtocol.serverAddress = Self.vpnProfileDescription
+        tunnelProtocol.providerConfiguration = try ipStack.applying(
+            to: tunnelProtocol.providerConfiguration
+        )
+        profile.protocolConfiguration = tunnelProtocol
+        profile.localizedDescription = Self.vpnProfileTitle
+        profile.isEnabled = true
+    }
+
     private static func owns(_ manager: any HakoTVSystemProfile) -> Bool {
         (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier
             == HakoAppIdentifiers.tvPacketTunnelExtensionBundleID
+    }
+
+     
+     
+     
+     
+     
+    static func dropMessage(for error: NSError, providerLooksUnlaunched: Bool) -> String {
+        if error.domain == NEVPNConnectionErrorDomain, error.code == 12, providerLooksUnlaunched {
+            return providerNotLaunchedMessage
+        }
+        return error.localizedDescription
     }
 
 
@@ -871,8 +1076,14 @@ final class HakoTVTunnelController: ObservableObject {
         }
     }
 
-    private func statusChanged() {
+     
+     
+     
+    func statusChanged() {
         let status = manager?.status ?? .invalid
+         
+         
+        _ = startFailureTracker.statusDidChange(to: status, at: clock())
         let previous = lastKnownStatus
         let active = status == .connected || status == .reasserting
         let previouslyActive = previous == .connected || previous == .reasserting
@@ -939,22 +1150,25 @@ final class HakoTVTunnelController: ObservableObject {
         let fallback = unexpectedWhileUp
             ? ControllerError.tunnelStopped.localizedDescription
             : ControllerError.tunnelDidNotStart.localizedDescription
-        guard let connection = manager?.vpnConnection else {
+        guard let profile = manager else {
             report(issue: fallback)
             return
         }
         let generation = startGeneration
-        connection.fetchLastDisconnectError { [weak self] error in
-            Task { @MainActor in
-                guard let self else { return }
-                 
-                 
-                guard self.startGeneration == generation, self.state.stage == .disconnected else { return }
-                if let error {
-                    self.report(issue: error.localizedDescription)
-                } else if self.state.issue == nil {
-                    self.report(issue: fallback)
-                }
+         
+         
+        let providerLooksUnlaunched = startFailureTracker.providerLooksUnlaunched
+        Task { @MainActor [weak self] in
+            let error = await profile.lastDisconnectError()
+            guard let self else { return }
+             
+             
+            guard self.startGeneration == generation, self.state.stage == .disconnected,
+                  self.state.issue == nil, self.state.vpnAuthorization == nil else { return }
+            if let error {
+                self.report(issue: Self.dropMessage(for: error as NSError, providerLooksUnlaunched: providerLooksUnlaunched))
+            } else {
+                self.report(issue: fallback)
             }
         }
     }
@@ -1073,10 +1287,14 @@ final class HakoTVTunnelController: ObservableObject {
             let decoded = try HakoTVKernelSnapshots.proxies(from: reply, groupOrder: groupOrder)
             guard accepts(context) else { return }
             state.proxyGroups = decoded.groups
+            state.hiddenProxyGroups = decoded.hiddenGroups
             state.latency = HakoTVNodesScreen.merge(
                 polled: decoded.latency, over: state.latency, sweeping: sweepingMembers
             )
             state.nodeCount = decoded.nodeCount
+             
+             
+            if !decoded.easyTierPlaceholders.isEmpty { state.easyTierNodeNames.formUnion(decoded.easyTierPlaceholders) }
             state.groupCount = decoded.groups.filter { $0.name != "GLOBAL" }.count
             let root = state.outboundMode == .global
                 ? decoded.groups.first { $0.name == "GLOBAL" }
@@ -1292,9 +1510,12 @@ final class HakoTVTunnelController: ObservableObject {
         case tunnelDidNotStart
         case tunnelStopped
         case kernelRefused(String)
+        case ipStackRestartFailed(String)
 
         var errorDescription: String? {
             switch self {
+            case .ipStackRestartFailed(let reason):
+                return String(localized: "IP Stack settings were saved, but the VPN did not restart. Connect again to apply them.") + "\n" + reason
             case .appGroupUnavailable:
                 return String(localized: "Clash could not open its secure shared container.")
             case .extensionUnavailable:
@@ -1512,7 +1733,7 @@ actor HakoTVIPCChannel {
         if object["error"] is String { return true }
         if object["accepted"] as? Bool == true { return false }
         switch command {
-        case "reload", "setMode", "select", "closeAll", "recordMemoryPressureEvidence":
+        case "reload", "setMode", "select", "unfix", "closeAll", "recordMemoryPressureEvidence":
             return object["ok"] as? Bool == true
         case "hello":
             return object["schemaVersion"] is NSNumber && object["coreVersion"] is String
@@ -1528,6 +1749,7 @@ actor HakoTVIPCChannel {
          
         case "ruleProviders": return object["providers"] is [String: Any]
         case "urltest": return object["delay"] is NSNumber
+        case "dnsQuery": return object["Status"] is NSNumber
         case "close": return object["closed"] is NSNumber
         case "proxyShareStart", "proxyShareStop", "proxyShareStatus":
             return object["ok"] as? Bool == true && object["status"] is [String: Any]

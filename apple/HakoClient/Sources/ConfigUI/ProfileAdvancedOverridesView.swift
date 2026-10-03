@@ -180,8 +180,7 @@ struct ProfileAdvancedOverridesView: View {
         .hakoRegistersDeparture(
             isDirty: draft != openedWith,
             save: { completion in
-                persist()
-                completion(true)
+                completion(commit())
             },
             discard: { draft = openedWith }
         )
@@ -364,7 +363,7 @@ struct ProfileAdvancedOverridesView: View {
                 .accessibilityValue(isCopyingFromProfile ? "Loading" : "Ready")
                 .accessibilityIdentifier("profile-advanced.copy-source")
             } header: {
-                Text("Custom Configuration")
+                Text("Custom Overrides")
             } footer: {
                 Text("Custom mode uses only the proxy groups and rules you define here.")
             }
@@ -482,15 +481,24 @@ struct ProfileAdvancedOverridesView: View {
         }
     }
 
-    private func persist() {
+     
+     
+     
+     
+     
+    private func persist() { if commit() { closePage() } }
+
+    @discardableResult
+    private func commit() -> Bool {
         do {
             try save(draft)
-            closePage()
+            return true
         } catch let bounded as ProfileAdvancedOverridesError {
             error = bounded.localizedDescription
         } catch {
             self.error = "Advanced overrides could not be saved. The previous configuration remains available."
         }
+        return false
     }
 
     @MainActor
@@ -599,7 +607,7 @@ private struct ProfileAdvancedGroupsHost: View {
  
  
  
-private struct ProfileRuntimeTrustEditor: View {
+struct ProfileRuntimeTrustEditor: View {
     @Environment(\.hakoInsideProductModalPresentation)
     private var insideProductModal
     let profile: Profile
@@ -617,7 +625,7 @@ private struct ProfileRuntimeTrustEditor: View {
     @State private var dismiss = HakoDismissHandle()
     @State private var draft: ProfileRuntimeTrustDraft
     @State private var error = ""
-    @State private var showsCertificateImporter = false
+    @State private var addingCertificate = false
      
     @State private var certificateRows = HakoIdentifiedRows()
 
@@ -676,19 +684,23 @@ private struct ProfileRuntimeTrustEditor: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
+                        }
+                        .frame(maxWidth: .infinity, minHeight: HakoClientUI.HakoTheme.Control.fullWidthRowMinHeightOnItsOwnPlatform)
+                        .accessibilityIdentifier("profile-runtime-trust.certificate.\(index)")
+                         
+                         
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
                                 guard var kept = draft.customTrustCertificates
                                 else { return }
                                 certificateRows.remove(row.id, from: &kept)
                                 draft.customTrustCertificates = kept
                             } label: {
-                                Image(systemName: HakoSymbol.trash.name)
-                                    .frame(width: 28, height: 28)
+                                Label("Delete", systemImage: HakoSymbol.trash.name)
                             }
+                            .tint(.red)
                             .accessibilityLabel("Remove Certificate \(index + 1)")
                         }
-                        .frame(maxWidth: .infinity, minHeight: HakoClientUI.HakoTheme.Control.fullWidthRowMinHeightOnItsOwnPlatform)
-                        .accessibilityIdentifier("profile-runtime-trust.certificate.\(index)")
                     }
                     .onAppear {
                         certificateRows.resync(count: certificates.count)
@@ -697,15 +709,21 @@ private struct ProfileRuntimeTrustEditor: View {
                         certificateRows.resync(count: $0)
                     }
 
-                    HakoAddRow(Text("Import Public Certificate")) {
-                        showsCertificateImporter = true
+                     
+                     
+                     
+                    HakoConfigurationLibraryAddCard(
+                        kind: .certificates,
+                        palette: HakoClientUI.HakoProductPalette.hakoProduct,
+                        nativeList: true,
+                        showsHeader: false
+                    ) {
+                        addingCertificate = true
                     }
-                    .accessibilityIdentifier("profile-runtime-trust.certificate.import")
+                    .accessibilityIdentifier("profile-runtime-trust.certificate.add")
                 }
             } header: {
                 Text("Custom Trust")
-            } footer: {
-                Text("Only public PEM certificates are accepted. Private keys are rejected and never stored by this editor.")
             }
 
             Section {
@@ -724,32 +742,6 @@ private struct ProfileRuntimeTrustEditor: View {
                 .accessibilityIdentifier("profile-runtime-trust.server-tls")
             } header: {
                 Text("External Controller TLS")
-            } footer: {
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                Text("Certificate, private-key, client-auth and ECH server-key fields are kept in the source and handed to Clash, which serves the controller over HTTPS when this profile sets external-controller-tls.")
-            }
-
-            if draft.originalOverwriteMode != .standard {
-                Section {
-                    Label(
-                        "Saving switches this profile to Standard overrides. Your existing script or custom draft is kept for later use.",
-                        systemImage: HakoSymbol.infoCircle.name
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                }
             }
 
             if !error.isEmpty {
@@ -762,8 +754,7 @@ private struct ProfileRuntimeTrustEditor: View {
         .hakoRegistersDeparture(
             isDirty: hasChanges,
             save: { completion in
-                persist()
-                completion(true)
+                completion(writeDraft())
             },
             discard: { if let openedWith { draft = openedWith } }
         )
@@ -778,12 +769,13 @@ private struct ProfileRuntimeTrustEditor: View {
                 }
             }
         }
-        .fileImporter(
-            isPresented: $showsCertificateImporter,
-            allowedContentTypes: [.data, .plainText],
-            allowsMultipleSelection: false,
-            onCompletion: importCertificate
-        )
+        .hakoProductModal(isPresented: $addingCertificate, role: .form) {
+            CertificateAddSheet(close: { addingCertificate = false }) { certificate in
+                add(certificate)
+                addingCertificate = false
+            }
+            .hakoModalPresentation(.form)
+        }
         .accessibilityIdentifier("profile-runtime-trust.screen")
         .hakoCapturesDismiss(dismiss)
          
@@ -835,40 +827,35 @@ private struct ProfileRuntimeTrustEditor: View {
         return updated.override.patchJSON != baselinePatchJSON
     }
 
-    private func persist() {
+     
+     
+     
+     
+     
+    private func persist() { if writeDraft() { dismiss() } }
+
+    @discardableResult
+    private func writeDraft() -> Bool {
         do {
             var working = profile
             working.override.patchJSON = baselinePatchJSON
             let updated = try draft.applying(to: working)
             commit(updated.override.patchJSON)
-            dismiss()
+            return true
         } catch let bounded as ProfileRuntimeTrustError {
             error = bounded.localizedDescription
         } catch {
             self.error = "Runtime and trust settings could not be prepared. The previous configuration remains unchanged."
         }
+        return false
     }
 
-    private func importCertificate(_ result: Result<[URL], Error>) {
-        do {
-            guard let url = try result.get().first else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            let data = try Data(contentsOf: url)
-            guard let raw = String(data: data, encoding: .utf8) else {
-                throw ProfileRuntimeTrustError.invalidCertificate
-            }
-            let certificate = try ProfileRuntimeTrustDraft.normalizedCertificate(raw)
-            if draft.customTrustCertificates == nil { draft.customTrustCertificates = [] }
-            if draft.customTrustCertificates?.contains(certificate) == false {
-                draft.customTrustCertificates?.append(certificate)
-            }
-            error = ""
-        } catch let bounded as ProfileRuntimeTrustError {
-            error = bounded.localizedDescription
-        } catch {
-            self.error = ProfileRuntimeTrustError.invalidCertificate.localizedDescription
+    private func add(_ certificate: String) {
+        if draft.customTrustCertificates == nil { draft.customTrustCertificates = [] }
+        if draft.customTrustCertificates?.contains(certificate) == false {
+            draft.customTrustCertificates?.append(certificate)
         }
+        error = ""
     }
 
     private static func byteCount(_ value: String) -> String {
@@ -880,6 +867,154 @@ private struct ProfileRuntimeTrustEditor: View {
  
  
  
+ 
+ 
+ 
+struct CertificateAddSheet: View {
+    let close: () -> Void
+    let added: (String) -> Void
+
+    @State private var tab = 1
+    @State private var address = ""
+    @State private var pemText = ""
+    @State private var importing = false
+    @State private var failure = ""
+    @State private var showsFailure = false
+    @State private var showsFileImporter = false
+
+    static func certificate(from raw: String) throws -> String {
+        try ProfileRuntimeTrustDraft.normalizedCertificate(raw)
+    }
+
+    var body: some View {
+        HakoFeatureNavigationContainer {
+             
+             
+             
+             
+             
+            Form { fields }
+            .hakoPinnedTopBar { tabs }
+            .hakoPageTitle("Add Certificate")
+            .hakoToolbarUnlessInPanel {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { close() }
+                        .accessibilityIdentifier("trust.add.cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) { commitButton }
+            }
+        }
+        .fileImporter(
+            isPresented: $showsFileImporter,
+            allowedContentTypes: [.x509Certificate, .data, .plainText, .text],
+            allowsMultipleSelection: false
+        ) { outcome in
+            importFile(outcome)
+        }
+        .alert("Import Failed", isPresented: $showsFailure) {
+            Button("OK") {}
+        } message: {
+            Text(verbatim: failure)
+        }
+    }
+
+    private var tabs: some View {
+        Picker("Add Certificate", selection: $tab) {
+            Text(HakoCopy.key("URL")).tag(1)
+            Text(HakoCopy.key("File")).tag(2)
+            Text(HakoCopy.key("Manual")).tag(3)
+        }
+        .pickerStyle(.segmented).padding(.horizontal, 20).padding(.vertical, 8)
+        .accessibilityIdentifier("trust.add.tabs")
+    }
+
+    @ViewBuilder
+    private var fields: some View {
+        switch tab {
+        case 1:
+            Section {
+                TextField("Certificate URL", text: $address)
+                    .textContentType(.URL)
+#if !os(macOS)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+#endif
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("trust.add.link.address")
+            }
+        case 2:
+            Section {
+                Button("Choose File…") { showsFileImporter = true }
+                    .accessibilityIdentifier("trust.add.file.choose")
+            }
+        default:
+            Section {
+                TextEditor(text: $pemText)
+                    .font(.system(.footnote, design: .monospaced))
+                    .frame(minHeight: 240)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("trust.add.pem")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var commitButton: some View {
+        if tab == 1 {
+            Button(importing ? "Importing…" : "Import") {
+                Task { @MainActor in await importLink() }
+            }
+            .disabled(importing || address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityIdentifier("trust.add.link.import")
+        } else if tab == 3 {
+             
+             
+            Button("Add") { finish(pemText) }
+                .disabled(pemText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("trust.add.save")
+        }
+    }
+
+    private func importLink() async {
+        importing = true
+        defer { importing = false }
+        do {
+            finish(try await ScriptImport.body(at: address))
+        } catch {
+            fail((error as NSError).localizedDescription)
+        }
+    }
+
+    private func importFile(_ outcome: Result<[URL], Error>) {
+        switch outcome {
+        case let .success(urls):
+            guard let url = urls.first else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) else {
+                fail(ProfileRuntimeTrustError.invalidCertificate.localizedDescription)
+                return
+            }
+            finish(text)
+        case let .failure(error):
+            fail((error as NSError).localizedDescription)
+        }
+    }
+
+    private func finish(_ raw: String) {
+        do {
+            added(try Self.certificate(from: raw))
+        } catch {
+            fail(error.localizedDescription)
+        }
+    }
+
+    private func fail(_ message: String) {
+        failure = message
+        showsFailure = true
+    }
+}
+
 struct ProfileAdditionalFieldsView: View {
     @Environment(\.hakoInsideProductModalPresentation)
     private var insideProductModal
@@ -988,8 +1123,7 @@ struct ProfileAdditionalFieldsView: View {
         .hakoRegistersDeparture(
             isDirty: draft != openedWith,
             save: { completion in
-                persist()
-                completion(true)
+                completion(commit())
             },
             discard: { draft = openedWith }
         )
@@ -998,16 +1132,25 @@ struct ProfileAdditionalFieldsView: View {
         .hakoCapturesDismiss(dismiss)
     }
 
-    private func persist() {
+     
+     
+     
+     
+     
+    private func persist() { if commit() { closePage() } }
+
+    @discardableResult
+    private func commit() -> Bool {
         do {
             draft.mode = .standard
             try save(draft)
-            closePage()
+            return true
         } catch let bounded as ProfileAdvancedOverridesError {
             error = bounded.localizedDescription
         } catch {
             self.error = "Additional fields could not be saved. The previous configuration remains available."
         }
+        return false
     }
 
      
@@ -1088,5 +1231,53 @@ private struct ProfileRawPatchEditor: View {
         }
         .hakoPageTitle("Raw Fields")
         .hakoDetailPageInsets()
+    }
+}
+
+ 
+ 
+ 
+ 
+struct ProfileTrustPage: View {
+    let profile: Profile
+    let sourceYAML: String?
+    let patchJSON: String
+    let save: (String) throws -> Void
+
+    @Environment(\.hakoProductModalDismiss) private var productModalDismiss
+    @State private var dismiss = HakoDismissHandle()
+    @State private var error = ""
+
+    var body: some View {
+        HakoFeatureNavigationContainer {
+            ProfileRuntimeTrustEditor(
+                profile: profile,
+                sourceYAML: sourceYAML,
+                patchJSON: patchJSON
+            ) { patchJSON in
+                do {
+                    try save(patchJSON)
+                    close()
+                } catch {
+                    self.error = error.localizedDescription
+                }
+            }
+            .hakoFeaturePresentation(ownsNavigationContainer: true)
+            .hakoToolbarUnlessInPanel {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { close() }
+                }
+            }
+            .alert("Cannot Save", isPresented: Binding(get: { !error.isEmpty }, set: { if !$0 { error = "" } })) {
+                Button("OK") {}
+            } message: {
+                Text(verbatim: error)
+            }
+        }
+        .hakoCapturesDismiss(dismiss)
+    }
+
+    private func close() {
+        if let productModalDismiss { productModalDismiss() } else { dismiss() }
     }
 }

@@ -1,4 +1,6 @@
 import Foundation
+import HakoClientKit
+import HakoClientUI
 
 enum PipelineError: LocalizedError {
     case planRejected([RemoteResourcePlan.Failure])
@@ -24,7 +26,7 @@ enum PipelineError: LocalizedError {
         case .sourceUnavailable(let reason):
             return reason
         case .notModifiedWithoutActive:
-            return "The subscription was not modified, but this profile has no active revision."
+            return "The profile URL was not modified, but this profile has no active revision."
         case .preflightFailed(let reason):
             return "Configuration validation failed: \(reason)"
         case .providerNotFound(let name):
@@ -151,14 +153,26 @@ enum ProfileRuntimeConfigBuilder {
          
          
          
+        var excludeAPNsRoute = false
+         
+         
+         
          
         var providerMerge = ProviderDefinitionMergeReport()
+         
+         
+         
+         
+         
+         
+        var profileLogLevel: String?
 
          
         func finished() throws -> String {
             try ConfigTransforms.applyClientRuntimePolicy(
                 beforeClientRuntimePolicy,
-                udpFallback: udpFallback
+                udpFallback: udpFallback,
+                excludeAPNsRoute: excludeAPNsRoute
             )
         }
     }
@@ -173,7 +187,8 @@ enum ProfileRuntimeConfigBuilder {
         postMergeScript: (String?, String, String) throws -> String = { _, yaml, _ in yaml },
         applyProviderDefinitions: Bool = true,
         applyProxyChain: Bool = true,
-        applyLegacyRelayMigration: Bool = true
+        applyLegacyRelayMigration: Bool = true,
+        logLevelDirective: HakoLogSettings.LevelDirective? = nil
     ) throws -> String {
         try buildStages(
             raw: raw,
@@ -185,7 +200,8 @@ enum ProfileRuntimeConfigBuilder {
             postMergeScript: postMergeScript,
             applyProviderDefinitions: applyProviderDefinitions,
             applyProxyChain: applyProxyChain,
-            applyLegacyRelayMigration: applyLegacyRelayMigration
+            applyLegacyRelayMigration: applyLegacyRelayMigration,
+            logLevelDirective: logLevelDirective
         ).finished()
     }
 
@@ -203,11 +219,18 @@ enum ProfileRuntimeConfigBuilder {
         postMergeScript: (String?, String, String) throws -> String = { _, yaml, _ in yaml },
         applyProviderDefinitions: Bool = true,
         applyProxyChain: Bool = true,
-        applyLegacyRelayMigration: Bool = true
+        applyLegacyRelayMigration: Bool = true,
+         
+         
+         
+         
+         
+         
+        logLevelDirective: HakoLogSettings.LevelDirective? = nil
     ) throws -> RuntimeBuildStages {
         let profileWorking: String
         switch profile.overwriteMode ?? .standard {
-        case .standard:
+        case .standard, .script:
             var spec = profile.override
              
              
@@ -218,19 +241,47 @@ enum ProfileRuntimeConfigBuilder {
              
              
             let muted = Set(spec.disabledAppendRules ?? [])
-            spec.appendRules.removeAll { muted.contains($0) }
-            spec.appendRules = try resolvedFallbackTargets(
-                spec.appendRules, mergedInto: raw
-            )
-            profileWorking = try ConfigTransforms.mergeOverride(
+            var personalRules = spec.appendRules.filter { !muted.contains($0) }
+            spec.appendRules = []
+            let patched = try ConfigTransforms.mergeOverride(
                 raw: raw,
                 overrideJSON: overrideJSON(from: spec)
             )
-        case .script:
-            profileWorking = try profileScript(profile.selectedScriptID, raw, profile.label)
+             
+             
+             
+            let scripted = profile.overwriteMode == .script
+                ? try profileScript(profile.selectedScriptID, patched, profile.label)
+                : patched
+             
+             
+             
+             
+             
+             
+             
+             
+             
+            personalRules = try resolvedFallbackTargets(personalRules, mergedInto: scripted)
+            let kept = droppingUnknownTargets(personalRules, mergedInto: scripted).kept
+            profileWorking = kept.isEmpty ? scripted : try ConfigTransforms.mergeOverride(
+                raw: scripted,
+                overrideJSON: overrideJSON(from: OverrideSpec(appendRules: kept, prependRules: spec.prependRules))
+            )
         case .custom:
-            profileWorking = try (profile.customOverwrite ?? CustomOverwriteSpec())
+            let overwritten = try (profile.customOverwrite ?? CustomOverwriteSpec())
                 .applyForFinalRuntimeMigration(to: raw)
+             
+             
+             
+             
+             
+            let listener = OverridePatch(patchJSON: profile.override.patchJSON)
+                .retainingTopLevelKeys(OverridePatch.listenerKeys)
+            profileWorking = listener.patchJSON.isEmpty ? overwritten : try ConfigTransforms.mergeOverride(
+                raw: overwritten,
+                overrideJSON: overrideJSON(from: OverrideSpec(patchJSON: listener.patchJSON))
+            )
         }
 
         var effectiveGlobal = profile.migratedGlobalOverride ?? globalOverride
@@ -250,6 +301,7 @@ enum ProfileRuntimeConfigBuilder {
         effectiveGlobal.appendRules = try resolvedFallbackTargets(
             effectiveGlobal.appendRules, mergedInto: profileWorking
         )
+        effectiveGlobal.appendRules = droppingUnknownTargets(effectiveGlobal.appendRules, mergedInto: profileWorking).kept
         let merged = try ConfigTransforms.mergeOverride(
             raw: profileWorking,
             overrideJSON: overrideJSON(from: effectiveGlobal)
@@ -259,13 +311,19 @@ enum ProfileRuntimeConfigBuilder {
         )
         let scripted = try configScript(profileScripted, profile.label)
         var providerMerge = ProviderDefinitionMergeReport()
+        var hasOwnLogLevel = false
+        var profileLogLevel: String?
         let trimmed = try applyClientTransforms(
             to: scripted,
             profile: profile,
             applyProviderDefinitions: applyProviderDefinitions,
             applyProxyChain: applyProxyChain,
             applyLegacyRelayMigration: applyLegacyRelayMigration,
-            providerMerge: &providerMerge
+            providerMerge: &providerMerge,
+            inspectLogLevel: { hasOwn, level in
+                hasOwnLogLevel = hasOwn
+                profileLogLevel = level
+            }
         )
 
         var effectiveRuntime = runtimeOverride
@@ -289,6 +347,27 @@ enum ProfileRuntimeConfigBuilder {
         if runtimePatch.mode == nil, let legacyMode = profile.outboundMode {
             runtimePatch.mode = legacyMode.rawValue
         }
+         
+         
+         
+         
+         
+         
+        let directive = logLevelDirective ?? HakoLogSettings.levelDirective(
+            from: UserDefaults(suiteName: HakoAppIdentifiers.appGroup) ?? .standard
+        )
+        switch directive {
+        case .forced(let forcedLevel):
+            runtimePatch.logLevel = forcedLevel.rawValue
+        case .followProfile:
+             
+             
+             
+             
+             
+             
+            runtimePatch.logLevel = hasOwnLogLevel ? nil : "warning"
+        }
         effectiveRuntime.patchJSON = runtimePatch.patchJSON
         let disabledRuntimeRules = Set(
             profile.override.disabledGlobalRules ?? []
@@ -311,7 +390,11 @@ enum ProfileRuntimeConfigBuilder {
                 profile: profile.udpFallbackPolicy,
                 global: UDPFallbackSettings.policy()
             ),
-            providerMerge: providerMerge
+            excludeAPNsRoute: HakoTunnelRouteShaping.Switches.read(
+                from: UDPFallbackSettings.appGroupDefaults
+            ).excludeAPNsRoute,
+            providerMerge: providerMerge,
+            profileLogLevel: profileLogLevel
         )
     }
 
@@ -349,7 +432,8 @@ enum ProfileRuntimeConfigBuilder {
         applyProviderDefinitions: Bool = true,
         applyProxyChain: Bool = true,
         applyLegacyRelayMigration: Bool = true,
-        providerMerge: inout ProviderDefinitionMergeReport
+        providerMerge: inout ProviderDefinitionMergeReport,
+        inspectLogLevel: ((Bool, String?) -> Void)? = nil
     ) throws -> String {
          
          
@@ -399,6 +483,8 @@ enum ProfileRuntimeConfigBuilder {
         }
         touched = try (profile.memoryTrim ?? MemoryTrimSpec())
             .apply(to: &document.root) || touched
+        let docLogLevel = document.root["log-level"] as? String
+        inspectLogLevel?(docLogLevel != nil && !(document.root["log-level"] is NSNull), docLogLevel)
          
          
          
@@ -434,6 +520,87 @@ enum ProfileRuntimeConfigBuilder {
 
      
      
+    static let builtinPolicies: Set<String> = ConfigurationComposer.builtins.union(["MATCH"])
+
+     
+     
+     
+    static func knownPolicies(in yaml: String) -> Set<String>? {
+        guard let json = try? ConfigTransforms.yamlToJSON(yaml),
+              let root = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        else { return nil }
+        var names = builtinPolicies
+        for key in ["proxies", "proxy-groups"] {
+            for case let entry as [String: Any] in (root[key] as? [Any]) ?? [] {
+                if let name = entry["name"] as? String { names.insert(name) }
+            }
+        }
+        return names
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func droppingUnknownTargets(
+        _ rules: [String],
+        mergedInto yaml: String
+    ) -> (kept: [String], dropped: [String]) {
+        guard !rules.isEmpty, let known = knownPolicies(in: yaml) else { return (rules, []) }
+        var kept: [String] = []
+        var dropped: [String] = []
+        for rule in rules {
+            if let target = StructuredRule.parse(rule)?.target, !target.isEmpty, !known.contains(target) {
+                dropped.append(rule)
+            } else {
+                kept.append(rule)
+            }
+        }
+        return (kept, dropped)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func personalRulesLeftOut(
+        of yaml: String, profile: Profile, globalOverride: OverrideSpec = GlobalConfig.load()
+    ) -> [String] {
+        guard let known = knownPolicies(in: yaml) else { return [] }
+        var candidates: [String] = []
+        switch profile.overwriteMode ?? .standard {
+        case .standard, .script:
+            let muted = Set(profile.override.disabledAppendRules ?? [])
+            candidates += profile.override.appendRules.filter { !muted.contains($0) }
+        case .custom:
+            break
+        }
+        if (profile.overwriteMode ?? .standard) == .standard {
+            let disabled = Set(profile.override.disabledGlobalRules ?? [])
+            candidates += (profile.migratedGlobalOverride ?? globalOverride).appendRules.filter { !disabled.contains($0) }
+        }
+        return candidates.filter { rule in
+            guard let target = StructuredRule.parse(rule)?.target, !target.isEmpty else { return false }
+            return !known.contains(target)
+        }
+    }
+
+     
+     
+     
+     
+     
      
      
      
@@ -447,11 +614,11 @@ enum ProfileRuntimeConfigBuilder {
         }
         guard needsResolution else { return rules }
         let json = try ConfigTransforms.yamlToJSON(yaml)
-        guard let root = try JSONSerialization.jsonObject(with: Data(json.utf8))
-                as? [String: Any],
-              let sourceRules = root["rules"] as? [Any] else { return rules }
+        let root = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+         
+         
+        let sourceRules = (root?["rules"] as? [Any]) ?? []
         let fallback = sourceRules.lazy
-            .reversed()
             .compactMap { entry -> String? in
                 guard let line = entry as? String,
                       let parsed = StructuredRule.parse(line),
@@ -459,8 +626,7 @@ enum ProfileRuntimeConfigBuilder {
                       parsed.target != "MATCH" else { return nil }
                 return parsed.target
             }
-            .first
-        guard let fallback else { return rules }
+            .first ?? "DIRECT"
         return rules.map { rule in
             guard var parsed = StructuredRule.parse(rule),
                   parsed.target == "MATCH" else { return rule }
@@ -614,6 +780,15 @@ final class ProfileActivationCoordinator {
          runtimeOverride: @escaping () -> OverrideSpec = {
              FlClashRuntimeConfig.load()
          },
+          
+          
+          
+          
+          
+          
+          
+          
+         logDefaults: UserDefaults = UserDefaults(suiteName: HakoAppIdentifiers.appGroup) ?? .standard,
          profileScript: @escaping (String?, String, String) throws -> String = {
              try ScriptLibrary.apply(id: $0, to: $1, profileName: $2)
          },
@@ -624,9 +799,7 @@ final class ProfileActivationCoordinator {
              try ScriptLibrary.apply(id: $0, to: $1, profileName: $2)
          },
          activator: @escaping (URL) throws -> Void,
-         preflight: @escaping (String) -> PreflightOutcome = {
-             PreflightService.check(finalYAML: $0)
-         },
+         preflight: ((String) -> PreflightOutcome)? = nil,
           
          stagingPublisher: @escaping (String, Int, Bool) -> Void = {
              ProviderStagingPublisher.publish(
@@ -666,6 +839,7 @@ final class ProfileActivationCoordinator {
         self.activationFetchBudget = activationFetchBudget
         self.globalOverride = globalOverride
         self.runtimeOverride = runtimeOverride
+        self.logDefaults = logDefaults
         self.profileScript = profileScript
         self.configScript = configScript
         self.postMergeScript = postMergeScript
@@ -673,7 +847,9 @@ final class ProfileActivationCoordinator {
         self.subscriptions = SubscriptionManager(downloader: downloader, credentials: credentials)
         self.materializer = ProviderMaterializer(downloader: downloader, credentials: credentials)
         self.geodata = GeodataManager(downloader: downloader)
-        self.preflight = preflight
+        self.preflight = preflight ?? { finalYAML in
+            PreflightService.check(finalYAML: finalYAML, container: coreHomeDir.deletingLastPathComponent())
+        }
         self.now = now
         self.log = log
     }
@@ -822,7 +998,7 @@ final class ProfileActivationCoordinator {
         } else {
             guard case .url = profile.source else {
                 throw PipelineError.sourceUnavailable(
-                    "profile '\(profile.label)' has no stored YAML and no subscription URL")
+                    "profile '\(profile.label)' has no stored YAML and no profile URL")
             }
             if let fetched = try await subscriptions.fetch(
                 profile: profile,
@@ -906,6 +1082,14 @@ final class ProfileActivationCoordinator {
          
         var updated = profile
         updated.activeRevision = pointer.revision
+         
+         
+        for rule in ProfileRuntimeConfigBuilder.personalRulesLeftOut(of: prepared, profile: profile, globalOverride: globalOverride()) {
+             
+            HakoLogStore.shared.append(
+                "personal rule left out of the runtime: \(rule) names a policy this configuration does not define",
+                stream: .app, level: .warning)
+        }
          
          
          
@@ -1207,6 +1391,11 @@ final class ProfileActivationCoordinator {
      
      
     private var lastProviderMerge = ProviderDefinitionMergeReport()
+     
+     
+    private var lastProfileLogLevel: String?
+     
+    private let logDefaults: UserDefaults
 
     private func prepareConfig(raw: String, profile: Profile) throws -> String {
         let stages = try ProfileRuntimeConfigBuilder.buildStages(
@@ -1225,9 +1414,11 @@ final class ProfileActivationCoordinator {
              
              
              
-            postMergeScript: postMergeScript
+            postMergeScript: postMergeScript,
+            logLevelDirective: HakoLogSettings.levelDirective(from: logDefaults)
         )
         lastProviderMerge = stages.providerMerge
+        lastProfileLogLevel = stages.profileLogLevel
         let runtime = try stages.finished()
         noteExternalResources(in: runtime, profile: profile)
         return runtime
@@ -1422,6 +1613,9 @@ final class ProfileActivationCoordinator {
                 forceRefresh: forceRefresh,
                 ageSecretKeys: ageSecretKeys,
                 localOverrides: providerOverrides,
+                cachedNodeFiles: ConfigurationCollectionContentBridge.cachedNodeFiles(
+                    urlsByName: Dictionary(uniqueKeysWithValues: plan.providers.filter { $0.kind == "proxy" }.map { ($0.name, $0.url) }),
+                    workingDirectory: coreHomeDir),
                 captureRefreshedPayloads: requestedProviders,
                 userAgent: ClientUserAgent.resolved(
                     configYAML: materializedMerged,
@@ -1431,7 +1625,8 @@ final class ProfileActivationCoordinator {
                 coreRouteSnapshots: coreRouteCache.snapshots,
                 reusedCoreFilePaths: reusedCoreFilePaths,
                 fetchOnly: fetchOnly,
-                fetchBudget: fetchBudget
+                fetchBudget: fetchBudget,
+                payloadStore: store.payloadStore
             )
             firstLoadPending = materialized.firstLoadPending
             firstLoadPendingOfLastPublication = firstLoadPending
@@ -1515,11 +1710,15 @@ final class ProfileActivationCoordinator {
                         ? ""
                         : " kept-old=\(materialized.staleFallbacks.count)")
             )
+             
+             
+             
             try await geodata.stage(
                 plan: plan,
                 homeDir: coreHomeDir,
                 maxBytesEach: Self.maxGeodataBytes,
-                preferBundled: true
+                preferBundled: true,
+                reuseExisting: true
             )
 
             stages.mark("geodata")
@@ -1591,6 +1790,10 @@ final class ProfileActivationCoordinator {
              
              
              
+            HakoLogSettings.setActiveProfileLogLevel(lastProfileLogLevel, in: logDefaults)
+             
+             
+             
              
              
             lanPermission(ProfileListenerPorts.parse(yaml: finalYAML)?.allowLAN ?? false)
@@ -1618,7 +1821,16 @@ final class ProfileActivationCoordinator {
         do {
             try activator(store.activeConfigURL)
         } catch {
-            try? store.restoreActive(previous)
+             
+             
+             
+             
+             
+            do {
+                try store.restoreActive(previous)
+            } catch {
+                _ = try? store.recoverCurrentFromLastKnownGood()
+            }
             throw error
         }
 

@@ -101,6 +101,11 @@ public struct HakoMoreSnapshot: Codable, Equatable, Sendable {
                 title: .copy(destination.title),
                 subtitle: "GeoIP, GeoSite, ASN, and MMDB data"
             )
+        case .storage:
+            return HakoProductDestinationPresentation(
+                title: .copy(destination.title),
+                subtitle: "Configurations, data, and caches"
+            )
         case .backupRestore:
             return HakoProductDestinationPresentation(
                 title: .copy(destination.title),
@@ -129,6 +134,11 @@ public struct HakoMoreSnapshot: Codable, Equatable, Sendable {
                 title: .copy(destination.title),
                 subtitle: "Encrypted resolvers, no packet tunnel",
                 badge: dnsOnlyActive ? "Active" : nil
+            )
+        case .ipStack:
+            return HakoProductDestinationPresentation(
+                title: .copy(destination.title),
+                subtitle: "IP query mode and tunnel IPv6"
             )
         case .tunnel:
             return HakoProductDestinationPresentation(

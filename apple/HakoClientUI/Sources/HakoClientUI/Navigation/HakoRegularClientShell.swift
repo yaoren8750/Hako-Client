@@ -30,11 +30,33 @@ public enum HakoRegularSidebarBehavior: Sendable {
      
     case systemMenuOnly
 
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    case fixed
+
     fileprivate var removesSidebarToolbarToggle: Bool {
         switch self {
-        case .locked, .systemMenuOnly:
+        case .locked, .systemMenuOnly, .fixed:
             true
         case .system:
+            false
+        }
+    }
+
+     
+     
+    var pinsAllColumns: Bool {
+        switch self {
+        case .locked, .fixed:
+            true
+        case .system, .systemMenuOnly:
             false
         }
     }
@@ -57,9 +79,10 @@ public enum HakoRegularSidebarBehavior: Sendable {
      
      
      
+     
     var usesFixedSidebarWidth: Bool {
         switch self {
-        case .locked, .systemMenuOnly:
+        case .locked, .systemMenuOnly, .fixed:
             true
         case .system:
             false
@@ -234,7 +257,7 @@ public struct HakoRegularClientShell<
     ) {
         _navigationState = navigationState
         _columnVisibility = State(
-            initialValue: sidebarBehavior == .locked ? .all : .automatic
+            initialValue: sidebarBehavior.pinsAllColumns ? .all : .automatic
         )
         self.sidebarBehavior = sidebarBehavior
         self.background = background
@@ -481,8 +504,18 @@ public struct HakoRegularClientShell<
                 HakoRegularDetailNavigationFrame(background: background) {
                     VStack(alignment: .leading, spacing: 0) {
                         if usesInContentRegularRootTitle {
+                             
+                             
+                             
+                             
+                             
+                             
+                             
+                             
+                             
+                             
                             Text(hako: .copy(regularRootTitle))
-                                .font(.largeTitle.bold())
+                                .font(.title2.bold())
                                 .accessibilityAddTraits(.isHeader)
                                 .accessibilityIdentifier("regular.detail.title")
                                 .padding(.horizontal, HakoTheme.Spacing.standard)
@@ -490,8 +523,7 @@ public struct HakoRegularClientShell<
                                  
                                  
                                  
-                                .padding(.top, HakoTheme.Spacing.section)
-                                .padding(.top, reservedBarInset)
+                                .padding(.top, HakoTheme.Spacing.row)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         regularRootContent(shellDrawsHeading: true)
@@ -868,7 +900,7 @@ public struct HakoRegularClientShell<
                     when: sidebarBehavior.removesSidebarToolbarToggle
                 )
                 .toolbar {
-                    if sidebarBehavior == .systemMenuOnly {
+                    if sidebarBehavior == .systemMenuOnly || sidebarBehavior == .fixed {
                          
                          
                          
@@ -905,6 +937,7 @@ public struct HakoRegularClientShell<
             .accessibilityHidden(true)
     }
 
+     
      
      
      
@@ -1411,16 +1444,10 @@ public struct HakoRegularClientShell<
         (value * 2).rounded() / 2
     }
 
-     
-     
-    private var reservedBarInset: CGFloat {
-        max(0, tallestRootBarInset - currentRootBarInset)
-    }
-
     private var regularRootTitle: String {
         navigationState.selectedRoot == .home
             ? ""
-            : navigationState.selectedRoot.title
+            : navigationState.selectedRoot.pageTitle
     }
 
     private var regularNavigationTitle: String {
@@ -1466,22 +1493,24 @@ public struct HakoRegularClientShell<
         }
     }
 
-    @ViewBuilder
-    private var detailBackground: some View {
+     
+     
+    private var detailBackground: AnyView {
         if #available(iOS 26.0, macOS 26.0, *) {
-            background
-                .ignoresSafeArea()
-                .backgroundExtensionEffect()
-        } else {
-            background.ignoresSafeArea()
+            return AnyView(
+                background
+                    .ignoresSafeArea()
+                    .backgroundExtensionEffect()
+            )
         }
+        return AnyView(background.ignoresSafeArea())
     }
 
 
      
      
     private func reassertLockedSidebar() {
-        guard sidebarBehavior == .locked, columnVisibility != .all else {
+        guard sidebarBehavior.pinsAllColumns, columnVisibility != .all else {
             return
         }
         columnVisibility = .all
@@ -1505,7 +1534,7 @@ public struct HakoRegularClientShell<
                 }
             },
             set: { visibility in
-                if sidebarBehavior == .locked {
+                if sidebarBehavior.pinsAllColumns {
                     columnVisibility = .all
                 } else if visibility == .all {
                     columnVisibility = .all

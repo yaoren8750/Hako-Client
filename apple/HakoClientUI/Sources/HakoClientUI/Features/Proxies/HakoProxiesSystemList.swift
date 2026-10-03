@@ -169,6 +169,7 @@ struct HakoProxiesSystemList<Icon: View>: View {
             HakoProxyGroupHeaderRow(
                 group: group,
                 isOpen: isOpen,
+                initialLatency: snapshot.proxies.displayedLatency(forGroup: group),
                 canTest: snapshot.proxies.isConnected,
                 showsIconImages: showsIconImages,
                 drawsDisclosure: drawsDisclosure,
@@ -215,14 +216,10 @@ struct HakoProxiesSystemList<Icon: View>: View {
          
         ForEach(memberOrder(group)) { member in
             HakoProxyMemberListRow(
-                row: HakoProxyFrozenRow(
-                    name: member.name,
-                    type: member.type,
-                    chainedThrough: member.chainedThrough,
-                    groupName: group.name
-                ),
+                row: HakoProxyFrozenRow(member, in: group, of: snapshot.proxies),
                 initialLatency: snapshot.proxies
                     .displayedLatency(for: member).normalized,
+                initialRoute: HakoProxyFrozenRow.route(of: member, in: snapshot.proxies),
                 failureCategory:
                     snapshot.proxies.failureCategories[member.name] ?? "",
                 isCurrent: member.name == current,
@@ -243,15 +240,18 @@ struct HakoProxiesSystemList<Icon: View>: View {
                     choiceRefusal = nil
                     send(.select(group: group.name, member: member.name))
                 },
-                editNode: member.isGroup
-                    ? nil
-                    : { send(.editMember(name: member.name)) },
+                editNode: snapshot.proxies.canEdit(member)
+                    ? { send(.editMember(name: member.name)) }
+                    : nil,
                 testNode: member.isGroup
                     ? nil
-                    : { send(.testMember(name: member.name)) },
+                    : { send(.testMember(name: member.name, group: group.name)) },
                 inspectNode: HakoProxyBrowsing.inspects(member)
                     ? { send(.inspectMember(name: member.name)) }
-                    : nil
+                    : nil,
+                 
+                 
+                showsLatency: !snapshot.proxies.isEmptyGroup(member)
             )
             .equatable()
         }
@@ -300,7 +300,9 @@ struct HakoProxiesSystemList<Icon: View>: View {
                         latencyPulse: latencyPulse,
                         latencyPulseSnapshot: latencyPulseSnapshot,
                         select: nil,
-                        editNode: { send(.editMember(name: node.name)) },
+                        editNode: snapshot.proxies.editableMembers.contains(node.name)
+                            ? { send(.editMember(name: node.name)) }
+                            : nil,
                         testNode: { send(.testMember(name: node.name)) },
                         inspectNode: HakoProxyBrowsing.inspects(
                             HakoProxyMemberSnapshot(name: node.name, type: node.type)
@@ -321,7 +323,7 @@ struct HakoProxiesSystemList<Icon: View>: View {
             ForEach(snapshot.proxies.providers) { provider in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: HakoTheme.Spacing.row) {
-                        HakoRegionalFlag.label(provider.name, pointSize: 17, relativeTo: .body)
+                        HakoRegionalFlag.label(provider.title, pointSize: 17, relativeTo: .body)
                             .font(.body.weight(.semibold))
                         Spacer(minLength: 8)
                         if let count = provider.nodeCount {
@@ -438,6 +440,56 @@ struct HakoProxyFrozenRow: Equatable, Identifiable {
     let type: String
     let chainedThrough: String?
     let groupName: String?
+     
+     
+    var isEmptyGroup: Bool = false
+     
+     
+    var placeholderType: String? = nil
+     
+     
+     
+     
+    var readingKey: String? = nil
+}
+
+extension HakoProxyFrozenRow {
+     
+     
+     
+     
+    static func route(
+        of member: HakoProxyMemberSnapshot,
+        in proxies: HakoProxiesSnapshot
+    ) -> String? {
+        guard member.isGroup,
+              let route = proxies.resolvedDisplayRoute(for: member),
+              route != member.name else { return nil }
+        return route
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    init(
+        _ member: HakoProxyMemberSnapshot,
+        in group: HakoProxyGroupSnapshot,
+        of proxies: HakoProxiesSnapshot
+    ) {
+        self.init(
+            name: member.name,
+            type: member.type,
+            chainedThrough: member.chainedThrough,
+            groupName: group.name,
+            isEmptyGroup: proxies.isEmptyGroup(member),
+            placeholderType: member.placeholderType,
+            readingKey: member.isGroup ? nil : member.latencyKey
+        )
+    }
 }
 
  
@@ -448,17 +500,28 @@ struct HakoProxyMemberListRow: View, Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.row == b.row
             && a.initialLatency == b.initialLatency
+            && a.initialRoute == b.initialRoute
              
              
              
             && a.failureCategory == b.failureCategory
             && a.isCurrent == b.isCurrent
             && a.canTest == b.canTest
+            && a.showsLatency == b.showsLatency
             && a.density == b.density
+             
+             
+            && (a.editNode == nil) == (b.editNode == nil)
     }
 
     let row: HakoProxyFrozenRow
     let initialLatency: HakoProxyLatencyState
+     
+     
+     
+     
+    var initialRoute: String? = nil
+
      
      
      
@@ -478,10 +541,22 @@ struct HakoProxyMemberListRow: View, Equatable {
      
     let inspectNode: (() -> Void)?
 
+     
+    var showsLatency: Bool = true
+
     @State private var liveLatency: HakoProxyLatencyState?
+    @State private var liveRoute: String?
 
     private var shownLatency: HakoProxyLatencyState {
         liveLatency ?? initialLatency
+    }
+
+     
+     
+     
+    private var shownRoute: String? {
+        guard let route = liveRoute ?? initialRoute, route != row.name else { return nil }
+        return route
     }
 
     var body: some View {
@@ -489,7 +564,7 @@ struct HakoProxyMemberListRow: View, Equatable {
          
          
          
-        return HStack(spacing: HakoTheme.Spacing.row) {
+        return HStack(spacing: 0) {
     Button {
                 select?()
             } label: {
@@ -505,27 +580,41 @@ struct HakoProxyMemberListRow: View, Equatable {
                         .accessibilityHidden(!isCurrent)
                     if density == .standard {
                         VStack(alignment: .leading, spacing: 2) {
-                            HakoRegionalFlag.label(row.name, pointSize: 17, relativeTo: .body)
-                                .font(.body)
+                             
+                             
+                             
+                             
+                            HakoRegionalFlag.label(row.name, pointSize: 15, relativeTo: .subheadline)
+                                .font(.subheadline)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             subtitle
                         }
                     } else {
-                        HakoRegionalFlag.label(row.name, pointSize: 17, relativeTo: .body)
-                            .font(.body)
+                        HakoRegionalFlag.label(row.name, pointSize: 15, relativeTo: .subheadline)
+                            .font(.subheadline)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
                     Spacer(minLength: 8)
                      
                      
-                    if let testNode {
-                        Button(action: testNode) { latencyBadge }
+                    if showsLatency {
+                        if let testNode {
+                             
+                             
+                             
+                             
+                            Button(action: testNode) {
+                                latencyBadge
+                                    .frame(minWidth: HakoTheme.Control.proxyRowTrailingControlWidth, maxHeight: .infinity, alignment: .trailing)
+                                    .contentShape(Rectangle())
+                            }
                             .buttonStyle(.plain)
                             .disabled(!canTest)
-                    } else {
-                        latencyBadge
+                        } else {
+                            latencyBadge
+                        }
                     }
                 }
                 .contentShape(Rectangle())
@@ -564,7 +653,9 @@ struct HakoProxyMemberListRow: View, Equatable {
                 Button(action: inspectNode) {
                     Image(systemName: HakoSymbol.infoCircle.rawValue)
                         .font(.body)
-                        .foregroundStyle(.tint)
+                        .foregroundStyle(Color.blue)
+                        .frame(minWidth: HakoTheme.Control.proxyRowTrailingControlWidth, maxHeight: .infinity, alignment: .trailing)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel(Text(HakoCopy.key("Node Details")))
@@ -574,27 +665,83 @@ struct HakoProxyMemberListRow: View, Equatable {
     }
 
     private func apply(_ batch: HakoLatencyPulse) {
+         
+         
+         
+         
         if !batch.isTesting {
-            if let landed = batch.results[row.name] {
+            liveRoute = batch.groupTerminals[row.name]
+        }
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        let latencyKey = shownRoute ?? row.name
+         
+         
+        let lookupKey = shownRoute == nil
+            ? row.readingKey ?? latencyKey
+            : shownRoute == batch.groupTerminals[row.name]
+                ? batch.groupTerminalKeys[row.name] ?? latencyKey
+                : latencyKey
+        if !batch.isTesting {
+            if let landed = batch.results[lookupKey] {
                 liveLatency = landed
             } else if liveLatency == .testing {
                 liveLatency = .untested
             }
-        } else if let landed = batch.results[row.name] {
+        } else if let landed = batch.results[lookupKey] {
             liveLatency = landed
-        } else if batch.testing.contains(row.name) {
+        } else if batch.testing.contains(lookupKey) {
             liveLatency = .testing
         }
     }
 
     @ViewBuilder
     private var subtitle: some View {
-        if let entry = row.chainedThrough {
+        if let placeholder = row.placeholderType {
+             
+             
+            HStack(spacing: 4) {
+                Text(hako: .verbatim(placeholder))
+                Text(hako: .copy("· Not supported"))
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        } else if row.isEmptyGroup {
+            HStack(spacing: 4) {
+                Text(hako: .verbatim(row.type.uppercased()))
+                Text(hako: .copy("· No nodes"))
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        } else if let entry = row.chainedThrough {
             HakoRegionalFlag.label("\(entry) → \(row.name)", pointSize: 11, relativeTo: .caption2)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+        } else if let route = shownRoute {
+             
+             
+             
+             
+            HStack(spacing: 4) {
+                Text(hako: .verbatim(row.type.uppercased()))
+                HakoRegionalFlag.label("· \(route)", pointSize: 11, relativeTo: .caption2)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
         } else {
             Text(hako: .verbatim(row.type.uppercased()))
                 .font(.caption2)
@@ -614,7 +761,7 @@ struct HakoProxyMemberListRow: View, Equatable {
         switch shownLatency {
         case .untested:
             Image(systemName: HakoSymbol.bolt.rawValue)
-                .font(.caption2)
+                .font(.body)
                  
                  
                 .foregroundStyle(canTest ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
@@ -665,6 +812,7 @@ struct HakoProxyGroupHeaderRow: View, Equatable {
          
          
         a.group == b.group && a.isOpen == b.isOpen && a.canTest == b.canTest
+            && a.initialLatency == b.initialLatency
             && a.showsIconImages == b.showsIconImages
             && a.drawsDisclosure == b.drawsDisclosure
             && a.showsUnpin == b.showsUnpin
@@ -672,6 +820,10 @@ struct HakoProxyGroupHeaderRow: View, Equatable {
 
     let group: HakoProxyGroupSnapshot
     let isOpen: Bool
+     
+     
+     
+    let initialLatency: HakoProxyLatencyState
      
      
      
@@ -690,6 +842,29 @@ struct HakoProxyGroupHeaderRow: View, Equatable {
      
     let showsUnpin: Bool
     let unpin: () -> Void
+
+     
+     
+     
+     
+     
+     
+    struct LiveLatency: Equatable {
+        let terminal: String
+        let state: HakoProxyLatencyState
+    }
+
+     
+     
+     
+    static func displayedLatency(
+        live: LiveLatency?,
+        route: String?,
+        initial: HakoProxyLatencyState
+    ) -> HakoProxyLatencyState {
+        if let live, live.terminal == route { return live.state }
+        return initial
+    }
 
      
      
@@ -733,7 +908,15 @@ struct HakoProxyGroupHeaderRow: View, Equatable {
         }
     }
 
-    @State private var liveLatency: HakoProxyLatencyState?
+    @State private var live: LiveLatency?
+
+    private var latency: HakoProxyLatencyState {
+        Self.displayedLatency(
+            live: live,
+            route: group.resolvedRuntimeRoute ?? group.runtimeSelection,
+            initial: initialLatency
+        )
+    }
 
     var body: some View {
         let _ = HakoPerf.count("proxies.list.header")
@@ -753,10 +936,19 @@ struct HakoProxyGroupHeaderRow: View, Equatable {
                             .truncationMode(.middle)
                         HStack(spacing: 4) {
                             Text(hako: .verbatim(group.type.uppercased()))
-                            if let now = group.currentSelection {
+                            if group.isEmpty {
+                                Text(hako: .copy("· No nodes"))
+                            } else if let now = group.currentSelection {
                                 HakoRegionalFlag.label("· \(now)", pointSize: 11, relativeTo: .caption2)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
+                            }
+                            if !group.isEmpty,
+                               case .measured(let milliseconds) = latency {
+                                Text(hako: .verbatim("(\(milliseconds) ms)"))
+                                    .monospacedDigit()
+                                    .foregroundStyle(HakoProxyLatencyPalette.color(milliseconds))
+                                    .accessibilityLabel("\(milliseconds)ms")
                             }
                         }
                         .font(.caption2)
@@ -791,14 +983,14 @@ struct HakoProxyGroupHeaderRow: View, Equatable {
              
             Button(action: test) {
                 Group {
-                    if liveLatency == .testing {
+                    if latency == .testing {
                         ProgressView()
                             .controlSize(.small)
                     } else {
                         Image(systemName: HakoSymbol.bolt.rawValue)
                              
                              
-                            .font(.footnote.weight(.semibold))
+                            .font(.body)
                     }
                 }
                  
@@ -822,14 +1014,14 @@ struct HakoProxyGroupHeaderRow: View, Equatable {
                      
                      
                     Text(hako: .verbatim("000"))
-                        .font(.caption)
+                        .font(.body)
                         .monospacedDigit()
                         .hidden()
                         .overlay(alignment: .trailing) {
                             Text(hako: .verbatim(
                                 group.members.count > 999 ? "999+" : "\(group.members.count)"
                             ))
-                            .font(.caption)
+                            .font(.body)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                             .lineLimit(1)
@@ -851,16 +1043,16 @@ struct HakoProxyGroupHeaderRow: View, Equatable {
             latencyPulse
                 ?? Empty<HakoLatencyPulse, Never>().eraseToAnyPublisher()
         ) { batch in
-            guard let terminal = batch.groupTerminals[group.name] else {
-                if !batch.isTesting { liveLatency = nil }
+            guard !group.isEmpty, let terminal = batch.groupTerminals[group.name] else {
+                if !batch.isTesting { live = nil }
                 return
             }
             if let landed = batch.results[terminal] {
-                liveLatency = landed
+                live = LiveLatency(terminal: terminal, state: landed)
             } else if batch.testing.contains(terminal) {
-                liveLatency = .testing
+                live = LiveLatency(terminal: terminal, state: .testing)
             } else if !batch.isTesting {
-                liveLatency = nil
+                live = nil
             }
         }
     }

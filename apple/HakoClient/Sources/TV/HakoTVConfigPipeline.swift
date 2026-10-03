@@ -10,27 +10,8 @@ import Hako
  
  
 enum HakoTVCore {
-    private static var setupContainer: URL?
-
     static func ensureSetup(container: URL) throws {
-        if setupContainer == container { return }
-        let options = HakoSetupOptions()
-        options.basePath = container.path
-        options.workingPath = container.appendingPathComponent("working").path
-        options.tempPath = container.appendingPathComponent("temp").path
-        options.timeZone = TimeZone.current.identifier
-        options.logMaxLines = 100
-         
-         
-        options.disablePersistentCache = true
-         
-         
-         
-        options.systemDNSServerLines = HakoSystemResolverLines()
-        var error: NSError?
-        HakoSetup(options, &error)
-        if let error { throw error }
-        setupContainer = container
+        try AppCoreSetup.ensure(container: container)
     }
 }
 
@@ -111,24 +92,36 @@ final class HakoTVConfigPipeline {
      
      
     let defaults: UserDefaults
-    private let setupCore: (URL) throws -> Void
+    private let setupCore: ((URL) throws -> Void)?
+    private let frozenSettings: IPStackSettings?
 
     init(
         container: URL,
         session: URLSession = HakoTVNetwork.session,
         defaults: UserDefaults = ClientUserAgent.appGroupDefaults,
-        setupCore: @escaping (URL) throws -> Void = HakoTVCore.ensureSetup
+        settings: IPStackSettings? = nil,
+        setupCore: ((URL) throws -> Void)? = nil
     ) {
         self.defaults = defaults
         self.setupCore = setupCore
+        self.frozenSettings = settings
         self.container = container
         self.session = session
     }
 
      
      
+     
+     
+     
+     
     static func profileID(for subscription: HakoTVSubscription) -> String {
-        let digest = SHA256.hash(data: Data(subscription.requestURL.absoluteString.utf8))
+        var identity = subscription.requestURL.absoluteString
+        if subscription.effectiveRules != .own { identity += "\n" + subscription.effectiveRules.rawValue }
+         
+         
+        if let script = subscription.scriptURL { identity += "\nscript:" + script.absoluteString }
+        let digest = SHA256.hash(data: Data(identity.utf8))
         let bytes = Array(digest.prefix(16))
         let uuid = UUID(uuid: (
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
@@ -141,18 +134,44 @@ final class HakoTVConfigPipeline {
         HakoTVSubscriptionFetcher.userAgent(defaults: defaults)
     }
 
-    private func prepareEnvironment() throws {
+    private func prepareEnvironment(settings: IPStackSettings) throws {
         let working = container.appendingPathComponent("working", isDirectory: true)
         try FileManager.default.createDirectory(at: working, withIntermediateDirectories: true)
-        try setupCore(container)
+        if let setupCore { try setupCore(container) }
+        else { try AppCoreSetup.ensure(container: container, settings: settings) }
         try BundledGeodataProvisioner.seedAllMissing(into: working)
+    }
+
+     
+     
+     
+    func updateScript(for subscription: HakoTVSubscription) async throws -> Int {
+        guard subscription.scriptURL != nil else {
+            throw PipelineError.invalidConfiguration(HakoTVOverrideScript.noScript)
+        }
+        let source = try await fetchScript(for: subscription, profileID: Self.profileID(for: subscription))
+        HakoLogStore.shared.append("tv override script updated  bytes=\(source.utf8.count)", stream: .app)
+        return source.utf8.count
+    }
+
+    private func fetchScript(for subscription: HakoTVSubscription, profileID: String) async throws -> String {
+        guard let scriptURL = subscription.scriptURL else {
+            throw PipelineError.invalidConfiguration(HakoTVOverrideScript.noScript)
+        }
+        let script = try await HakoTVSubscriptionFetcher.fetchBody(scriptURL, session: session, userAgent: userAgent)
+        guard let source = String(data: script.body, encoding: .utf8) else {
+            throw PipelineError.invalidConfiguration(HakoTVOverrideScript.notText)
+        }
+        try HakoTVOverrideScriptStore.write(source, container: container, profileID: profileID)
+        return source
     }
 
     func activate(
         subscription: HakoTVSubscription,
         progress: @escaping (Phase) -> Void
     ) async throws -> Activation {
-        try prepareEnvironment()
+        let settings = try frozenSettings ?? IPStackSettings.load(from: defaults)
+        try prepareEnvironment(settings: settings)
 
         let profileID = Self.profileID(for: subscription)
         let sourceYAML: String
@@ -167,12 +186,46 @@ final class HakoTVConfigPipeline {
             panelName = nil
         } else {
             progress(.downloading)
-            let fetched = try await HakoTVSubscriptionFetcher.fetch(
+            let fetched = try await HakoTVSubscriptionFetcher.fetchBody(
                 subscription.requestURL,
                 session: session,
                 userAgent: userAgent
             )
-            sourceYAML = fetched.yaml
+             
+             
+             
+             
+            let composed: String
+            do {
+                composed = try HakoTVComposedProfile.document(body: fetched.body, rules: subscription.effectiveRules)
+            } catch let error as HakoTVSubscriptionFetcher.FetchError {
+                throw error
+            } catch {
+                throw PipelineError.invalidConfiguration(error.localizedDescription)
+            }
+             
+             
+             
+             
+             
+            if subscription.scriptURL != nil {
+                 
+                 
+                let source: String
+                if let kept = HakoTVOverrideScriptStore.read(container: container, profileID: profileID) {
+                    source = kept
+                } else {
+                    source = try await fetchScript(for: subscription, profileID: profileID)
+                }
+                do {
+                    sourceYAML = try HakoTVOverrideScript.apply(script: source, toYAML: composed, profileName: subscription.title)
+                } catch {
+                    throw PipelineError.invalidConfiguration(error.localizedDescription)
+                }
+                HakoLogStore.shared.append("tv override script applied  bytes=\(source.utf8.count)", stream: .app)
+            } else {
+                sourceYAML = composed
+            }
             userInfo = fetched.userInfo
             panelName = fetched.panelName
         }
@@ -182,7 +235,7 @@ final class HakoTVConfigPipeline {
         try Task.checkCancellation()
 
         return try await prepare(sourceYAML: sourceYAML, profileID: profileID,
-                                 userInfo: userInfo, panelName: panelName, progress: progress)
+                                 userInfo: userInfo, panelName: panelName, settings: settings, progress: progress)
     }
 
      
@@ -195,7 +248,8 @@ final class HakoTVConfigPipeline {
               let directory = store.providersDirectory(profileID: expected.profileID, revision: expected.revision),
               let record = HakoTVRuleRecovery.read(from: directory) else { return nil }
          
-        try prepareEnvironment()
+        let settings = try frozenSettings ?? IPStackSettings.load(from: defaults)
+        try prepareEnvironment(settings: settings)
         let plan = try ConfigTransforms.planResources(mergedYAML: record.sourceYAML)
         var snapshots = try HakoTVRuleRecovery.snapshots(sourceYAML: record.sourceYAML, plan: plan,
                                                        container: container, profileID: expected.profileID,
@@ -215,12 +269,13 @@ final class HakoTVConfigPipeline {
         }
         return try await prepare(sourceYAML: record.sourceYAML, profileID: expected.profileID,
                                  userInfo: nil, panelName: nil, expected: expected,
-                                 existingProxyDirectory: directory, snapshots: snapshots, progress: { _ in })
+                                 existingProxyDirectory: directory, snapshots: snapshots, settings: settings, progress: { _ in })
     }
 
     private func prepare(sourceYAML: String, profileID: String, userInfo: String?, panelName: String?,
                          expected: ActiveConfigurationPointer? = nil, existingProxyDirectory: URL? = nil,
                          snapshots suppliedSnapshots: [String: Data]? = nil,
+                         settings: IPStackSettings,
                          progress: @escaping (Phase) -> Void) async throws -> Activation {
         progress(.preparing)
         do {
@@ -272,7 +327,7 @@ final class HakoTVConfigPipeline {
                 try HakoTVRuleRecovery(sourceYAML: sourceYAML, hashes: HakoTVRuleRecovery.hashes(snapshots))
                     .write(to: candidate.stagingProvidersDirectory)
             }
-            let outcome = PreflightService.check(finalYAML: finalYAML)
+            let outcome = PreflightService.check(finalYAML: finalYAML, container: container, settings: settings)
             guard outcome.ok else {
                 throw PipelineError.preflightFailed(outcome.errorMessage ?? "preflight failed")
             }

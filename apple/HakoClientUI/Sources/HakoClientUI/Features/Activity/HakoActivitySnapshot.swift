@@ -118,6 +118,24 @@ public struct HakoActivityConnectionSnapshot:
         return overflow ? .max : value
     }
 
+     
+     
+    public func attributed(process: String, processPath: String, uid: Int64) -> Self {
+        Self(
+            id: id, destination: destination, source: source, network: network,
+            route: route, rule: rule, upload: upload, download: download,
+            start: start, uid: uid, host: host, sourceIP: sourceIP,
+            sourcePort: sourcePort, destinationIP: destinationIP,
+            destinationPort: destinationPort, dnsMode: dnsMode,
+            process: process, processPath: processPath,
+            remoteDestination: remoteDestination, sourceGeoIP: sourceGeoIP,
+            destinationGeoIP: destinationGeoIP, destinationIPASN: destinationIPASN,
+            sourceIPASN: sourceIPASN, specialRules: specialRules,
+            specialProxy: specialProxy, chains: chains, rulePayload: rulePayload,
+            uploadSpeed: uploadSpeed, downloadSpeed: downloadSpeed
+        )
+    }
+
     public var ruleDescription: String {
         rulePayload.isEmpty
             ? rule
@@ -166,6 +184,7 @@ public enum HakoActivityLogSeverity:
     String,
     CaseIterable,
     Codable,
+    Comparable,
     Identifiable,
     Sendable
 {
@@ -180,6 +199,22 @@ public enum HakoActivityLogSeverity:
         rawValue.capitalized
     }
 
+
+     
+     
+     
+     
+    private var sortOrder: Int {
+        Self.allCases.firstIndex(of: self) ?? 0
+    }
+
+    public static func < (
+        lhs: HakoActivityLogSeverity,
+        rhs: HakoActivityLogSeverity
+    ) -> Bool {
+        lhs.sortOrder < rhs.sortOrder
+    }
+
      
      
      
@@ -187,6 +222,24 @@ public enum HakoActivityLogSeverity:
         fromRawValues rawValues: [String]
     ) -> Set<HakoActivityLogSeverity> {
         Set(rawValues.compactMap(HakoActivityLogSeverity.init(rawValue:)))
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func expandedSeverities(
+        from severities: Set<HakoActivityLogSeverity>
+    ) -> Set<HakoActivityLogSeverity> {
+        guard let minSeverity = severities.min() else { return severities }
+        return Set(allCases.filter { $0 >= minSeverity })
     }
 }
 

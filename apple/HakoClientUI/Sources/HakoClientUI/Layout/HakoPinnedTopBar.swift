@@ -25,11 +25,13 @@ public extension View {
      
      
      
-    @ViewBuilder
+     
+     
+     
     func hakoPinnedTopBar<Bar: View>(
         @ViewBuilder _ bar: @escaping () -> Bar
-    ) -> some View {
-        if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
+    ) -> AnyView {
+        if HakoPinnedTopBarPolicy.usesSystemScrollPocket {
              
              
              
@@ -39,12 +41,16 @@ public extension View {
              
              
              
-            safeAreaBar(edge: .top, spacing: 0, content: bar)
-        } else {
+            if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
+                return AnyView(safeAreaBar(edge: .top, spacing: 0, content: bar))
+            }
+            return AnyView(self)
+        }
+        return AnyView(
             safeAreaInset(edge: .top, spacing: 0) {
                 bar().modifier(HakoPreScrollEdgeBarGround())
             }
-        }
+        )
     }
 
      
@@ -59,7 +65,7 @@ public extension View {
         @ViewBuilder footprint: @escaping () -> Footprint,
         @ViewBuilder bar: @escaping () -> Bar
     ) -> some View {
-        if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
+        if HakoPinnedTopBarPolicy.usesSystemScrollPocket {
             hakoPinnedTopBar {
                 footprint()
                     .hidden()
@@ -128,6 +134,32 @@ public extension View {
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum HakoPinnedTopBarPolicy {
+    static var usesSystemScrollPocket: Bool {
+#if os(macOS)
+        return false
+#else
+        if #available(iOS 26.0, tvOS 26.0, *) { return true }
+        return false
+#endif
+    }
+}
+
 private struct HakoPreScrollEdgeBarGround: ViewModifier {
     @Environment(\.hakoDetailCanvas) private var canvas
     @Environment(\.hakoRegularShellOwnsCanvas) private var shellOwnsCanvas

@@ -82,6 +82,7 @@ public struct HakoDNSSettingsView<
     Icon: View,
     DNSQuery: View
 >: View {
+    private let configurationDraft: Bool
     private let snapshot: AppleClientSnapshot
     private let actions: AppleClientActions
     private let capabilities: HakoDNSCapabilities
@@ -128,10 +129,12 @@ public struct HakoDNSSettingsView<
         snapshot: AppleClientSnapshot,
         actions: AppleClientActions,
         capabilities: HakoDNSCapabilities,
+        configurationDraft: Bool = false,
 
         @ViewBuilder icon: @escaping (HakoSymbol) -> Icon,
         @ViewBuilder dnsQueryDestination: @escaping () -> DNSQuery
     ) {
+        self.configurationDraft = configurationDraft
         self.snapshot = snapshot
         self.actions = actions
         self.capabilities = capabilities
@@ -147,11 +150,11 @@ public struct HakoDNSSettingsView<
          
          
         HakoMacSettingsFormContainer(
-            scopeFooter: snapshot.dns.profileName == nil
+            scopeFooter: configurationDraft ? .copy("These DNS settings belong only to this configuration.") : snapshot.dns.profileName == nil
                 ? .copy("These settings apply to every profile.")
                 : nil
         ) {
-            if let profileName = snapshot.dns.profileName {
+            if !configurationDraft, let profileName = snapshot.dns.profileName {
                 Section {
                     HakoProfileContextHeader(
                         profileName: profileName,
@@ -163,6 +166,7 @@ public struct HakoDNSSettingsView<
                 }
             }
 
+            if !configurationDraft {
             Section {
                 if HakoPlatformLayout.pageUsesSystemSettingsIdiom {
                     HakoMacToggleRow(
@@ -190,6 +194,8 @@ public struct HakoDNSSettingsView<
                     "Off: a profile with its own DNS keeps it; the settings below still apply to profiles without one. Turn it on to change them for every profile."
                 )
                 .hakoMacSettingsFootnote()
+            }
+
             }
 
              
@@ -282,7 +288,24 @@ public struct HakoDNSSettingsView<
                                 draft: local,
                                 snapshot: snapshot.dns,
                                 capabilities: capabilities,
-                                icon: icon
+                                icon: icon,
+                                 
+                                 
+                                 
+                                 
+                                 
+                                saving: HakoDoorSaving(
+                                    isDirty: { local.wrappedValue != openedWith },
+                                    save: { completion in
+                                        shownDraft.wrappedValue = local.wrappedValue
+                                        persist(completion: completion)
+                                    },
+                                    discard: {
+                                        saveCoordinator.cancel()
+                                        local.wrappedValue = openedWith
+                                        draft = openedWith
+                                    }
+                                )
                             )
                         }
                         .hakoPushedDetailPage()
@@ -452,21 +475,13 @@ public struct HakoDNSSettingsView<
         } message: {
             Text(hako: .verbatim(saveRefusal ?? ""))
         }
-        .alert("Save your changes?", isPresented: $asksAboutUnsaved) {
-             
-             
-             
-             
-            Button("Save") { persist() }
-                .disabled(saveCoordinator.isBusy)
-            Button("Discard", role: .destructive) {
-                discardChangesAndDismiss()
-            }
-            .disabled(saveCoordinator.isBusy)
-            Button("Keep Editing", role: .cancel) {}
-        } message: {
-            Text("These DNS settings have changes that have not been saved.")
-        }
+        .hakoUnsavedChangesAlert(
+            isPresented: $asksAboutUnsaved,
+            message: .copy("These DNS settings have changes that have not been saved."),
+            isBusy: saveCoordinator.isBusy,
+            save: { persist() },
+            discard: { discardChangesAndDismiss() }
+        )
          
          
          
@@ -529,7 +544,7 @@ public struct HakoDNSSettingsView<
             Button {
                 persist()
             } label: {
-                Text(hako: .copy(saveButtonTitle))
+                HakoActionProgressLabel(.copy("Save"), isBusy: saveCoordinator.isBusy)
             }
              
              
@@ -539,14 +554,6 @@ public struct HakoDNSSettingsView<
              
             .disabled(saveCoordinator.phase != .idle || !hasUnsavedEdits)
             .accessibilityIdentifier("profile-dns.save")
-        }
-    }
-
-    private var saveButtonTitle: String {
-        switch saveCoordinator.phase {
-        case .checking: "Checking…"
-        case .committing: "Saving…"
-        case .idle, .awaitingWarning: "Save"
         }
     }
 
@@ -634,7 +641,7 @@ public struct HakoDNSSettingsView<
         let accepted = saveCoordinator.save(
             draft: candidate,
             preflight: { candidate in
-                guard candidate.overrideDNS else { return nil }
+                guard !configurationDraft, candidate.overrideDNS else { return nil }
                 let verdict = await HakoDNSPreSaveCheck.run(
                     nameserver: candidate.nameserver,
                     policyResolvers:
@@ -654,8 +661,11 @@ public struct HakoDNSSettingsView<
                 switch outcome {
                 case .saved(let saved):
                     openedWith = saved
-                    completion?(true)
-                    dismiss()
+                     
+                     
+                     
+                     
+                    if let completion { completion(true) } else { dismiss() }
                 case .failed(let message):
                     error = message
                     completion?(false)
@@ -791,6 +801,12 @@ public struct HakoDNSLocalMappingsView<Icon: View>: View {
      
      
     @State private var dismiss = HakoDismissHandle()
+     
+     
+     
+     
+    @Environment(\.hakoInsideProductModalPresentation) private var insideProductModal
+    @Environment(\.hakoPopRoute) private var popRoute
     @State private var mappings: [HakoDNSLocalMapping]
     @State private var editing: HakoDNSMappingEdit?
     @State private var error = ""
@@ -914,11 +930,23 @@ public struct HakoDNSLocalMappingsView<Icon: View>: View {
         .hakoPageTitle("Local Mapping")
         .hakoToolbarUnlessInPanel {
             ToolbarItem(placement: .confirmationAction) {
-                Button(isSaving ? "Saving…" : "Save") {
+                Button {
                     persist()
-                }
+                } label: { HakoActionProgressLabel(.copy("Save"), isBusy: isSaving) }
                 .disabled(isSaving)
                 .accessibilityIdentifier("profile-hosts.save")
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if insideProductModal {
+                HakoModalActionBar(
+                    primaryTitle: "Save",
+                    primaryDisabled: isSaving || mappings == snapshot.dns.localMappings,
+                    primaryHint: mappings == snapshot.dns.localMappings
+                        ? "Change something to save it." : nil,
+                    isBusy: isSaving,
+                    onPrimary: persist
+                )
             }
         }
         .sheet(item: $editing) { request in
@@ -1023,7 +1051,11 @@ public struct HakoDNSLocalMappingsView<Icon: View>: View {
                     allowedBy: snapshot
                 )
                 isSaving = false
-                dismiss()
+                if let popRoute {
+                    popRoute(HakoPopToken())
+                } else {
+                    dismiss()
+                }
             } catch {
                 isSaving = false
                  
@@ -1148,6 +1180,9 @@ private struct HakoDNSAdvancedView<Icon: View>: View {
     let snapshot: HakoDNSSnapshot
     let capabilities: HakoDNSCapabilities
     let icon: (HakoSymbol) -> Icon
+     
+     
+    var saving: HakoDoorSaving? = nil
 
     @ViewBuilder
     private func doorDestination(_ route: DNSDoorRoute) -> some View {
@@ -1340,13 +1375,9 @@ private struct HakoDNSAdvancedView<Icon: View>: View {
                     upstreamDefault: UpstreamTextDefault.pinned(for: "dns.enhanced-mode"),
                     identifier: "profile-dns.mode"
                 )
-                HakoDNSFieldRows.triStatePicker(
-                    "Return IPv6 results",
-                    selection: $draft.ipv6,
-                    inherited: snapshot.inherited.bool("dns.ipv6"),
-                    upstreamDefault: UpstreamBoolDefault.value(for: "dns.ipv6"),
-                    identifier: "profile-dns.ipv6"
-                )
+                Text("IP address families are controlled in More > IP Stack.")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("profile-dns.ipStack")
                 HakoDNSFieldRows.trailingNumberField(
                     "IPv6 wait (ms)",
                     text: $draft.ipv6Timeout,
@@ -1558,7 +1589,8 @@ private struct HakoDNSAdvancedView<Icon: View>: View {
         }
         .hakoDoorPresenter(
             selection: $advancedDoor,
-            title: doorTitle
+            title: doorTitle,
+            saving: saving
         ) { route in
             doorDestination(route)
         }
@@ -2809,8 +2841,10 @@ private struct HakoDNSPolicyEntrySheet<Icon: View>: View {
     }
 
      
-    private func commitOnce() {
-        guard !committed, isUsable else { return }
+     
+     
+    private func writeOnce() -> Bool {
+        guard !committed, isUsable else { return false }
         committed = true
         save(draft)
          
@@ -2820,6 +2854,11 @@ private struct HakoDNSPolicyEntrySheet<Icon: View>: View {
          
          
         committed = false
+        return true
+    }
+
+    private func commitOnce() {
+        guard writeOnce() else { return }
          
          
          
@@ -2937,8 +2976,7 @@ private struct HakoDNSPolicyEntrySheet<Icon: View>: View {
             .hakoRegistersDeparture(
                 isDirty: openedWith.map { $0 != draft } ?? false,
                 save: { completion in
-                    commitOnce()
-                    completion(true)
+                    completion(writeOnce())
                 },
                 discard: { if let openedWith { draft = openedWith } }
             )

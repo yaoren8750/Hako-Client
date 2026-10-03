@@ -685,7 +685,8 @@ enum ProxiesRuntimeCatalogComposer {
                         isGroup: isGroup,
                          
                          
-                        chainedThrough: isGroup ? nil : chainedByNode[member]
+                        chainedThrough: isGroup ? nil : chainedByNode[member],
+                        placeholderType: isGroup ? nil : group.memberPlaceholderTypes[member]
                     )
                 },
                  
@@ -694,6 +695,10 @@ enum ProxiesRuntimeCatalogComposer {
                  
                  
                 configuredSelection: configuredByGroup[group.name] ?? nil,
+                 
+                 
+                emptyFallback: group.emptyFallback
+                    ?? source.first { $0.name == group.name }?.emptyFallback,
                 hidden: group.hidden,
                  
                  

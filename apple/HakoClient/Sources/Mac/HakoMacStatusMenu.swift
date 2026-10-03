@@ -113,23 +113,13 @@ enum HakoMacStatusMenuBuilder {
 
          
          
-        let pointSize = HakoMacMenuRowMetrics.pointSize
-        let hostedWidth = HakoMacMenuRowMetrics.groupRowWidth(
-            leading: [copy("Mode")] + snapshot.proxies.groups.map { "\($0.name) · \($0.type)" },
-            trailing: [copy(snapshot.outboundMode.menuTitle)] + snapshot.proxies.groups.map(\.now)
-        )
-
+         
          
          
          
         let mode = NSMenuItem(title: copy("Mode"), action: nil, keyEquivalent: "")
         mode.setAccessibilityIdentifier("menu-bar.outbound-mode")
-        mode.view = HakoMacMenuRowHost.make(
-            model: HakoMacMenuRowModel(
-                kind: .group, name: copy("Mode"), trailing: copy(snapshot.outboundMode.menuTitle)
-            ),
-            width: hostedWidth, pointSize: pointSize, closesMenuOnClick: false, onClick: {}
-        )
+        setTrailing(copy(snapshot.outboundMode.menuTitle), on: mode)
         let modes = plainMenu()
         for candidate in AppleClientOutboundMode.allCases {
             modes.addItem(row(
@@ -148,18 +138,14 @@ enum HakoMacStatusMenuBuilder {
          
          
          
+         
         if !snapshot.proxies.groups.isEmpty {
             menu.addItem(.separator())
-            let width = hostedWidth
             for group in snapshot.proxies.groups {
                 let item = NSMenuItem(title: group.name, action: nil, keyEquivalent: "")
                 item.setAccessibilityIdentifier("menu-bar.proxy-group")
-                let model = HakoMacMenuRowModel(
-                    kind: .group, name: group.name, detail: group.type, trailing: group.now
-                )
-                item.view = HakoMacMenuRowHost.make(
-                    model: model, width: width, pointSize: pointSize, closesMenuOnClick: false, onClick: {}
-                )
+                item.attributedTitle = groupTitle(name: group.name, type: group.type)
+                setTrailing(group.checked ?? "", on: item)
                 let submenu = plainMenu()
                 let lazy = HakoMacProxySubmenuController(
                     group: { group }, actions: actions, locale: locale
@@ -237,6 +223,32 @@ enum HakoMacStatusMenuBuilder {
         let menu = NSMenu()
         menu.autoenablesItems = false
         return menu
+    }
+
+     
+     
+     
+     
+     
+    private static func setTrailing(_ text: String, on item: NSMenuItem) {
+        guard !text.isEmpty else { return }
+        if #available(macOS 14, *) {
+            item.badge = NSMenuItemBadge(string: text)
+        }
+    }
+
+     
+     
+     
+    static func groupTitle(name: String, type: String) -> NSAttributedString {
+        let font = HakoMacMenuRowMetrics.font
+        let title = NSMutableAttributedString(string: name, attributes: [.font: font])
+        guard !type.isEmpty else { return title }
+        title.append(NSAttributedString(string: " · \(type)", attributes: [
+            .font: NSFont.menuFont(ofSize: font.pointSize - 2),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]))
+        return title
     }
 
      
@@ -330,7 +342,7 @@ final class HakoMacStatusMenuController: NSObject, NSMenuDelegate {
     private let locale: Locale
     private let optionIsHeld: () -> Bool
     private let tunnelIsUp: () -> Bool
-    private let latency: AnyPublisher<[String: HakoProxyLatencyState], Never>?
+    private let latency: AnyPublisher<[String: [String: HakoProxyLatencyState]], Never>?
     private let testing: AnyPublisher<Bool, Never>?
     private let listenerUpdates: AnyPublisher<Void, Never>?
     private var listening: Set<AnyCancellable> = []
@@ -345,7 +357,7 @@ final class HakoMacStatusMenuController: NSObject, NSMenuDelegate {
         locale: Locale = .current,
         optionIsHeld: @escaping () -> Bool = { NSEvent.modifierFlags.contains(.option) },
         tunnelIsUp: @escaping () -> Bool = { false },
-        latency: AnyPublisher<[String: HakoProxyLatencyState], Never>? = nil,
+        latency: AnyPublisher<[String: [String: HakoProxyLatencyState]], Never>? = nil,
         testing: AnyPublisher<Bool, Never>? = nil,
         listenerUpdates: AnyPublisher<Void, Never>? = nil
     ) {
@@ -421,17 +433,12 @@ final class HakoMacStatusMenuController: NSObject, NSMenuDelegate {
      
      
      
-    func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
-        for candidate in menu.items {
-            (candidate.view as? HakoMacMenuRowHost)?.model.isHighlighted = candidate === item
-        }
-    }
-
      
-     
-    func apply(latency: [String: HakoProxyLatencyState]) {
+    func apply(latency: [String: [String: HakoProxyLatencyState]]) {
         for item in menu.items {
-            (item.representedObject as? HakoMacProxySubmenuController)?.apply(latency: latency)
+            guard let submenu = item.representedObject as? HakoMacProxySubmenuController,
+                  let name = submenu.groupName else { continue }
+            submenu.apply(latency: latency[name] ?? [:])
         }
     }
 

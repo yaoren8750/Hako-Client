@@ -110,6 +110,9 @@ struct HakoTVEditSubscriptionScreen: View {
              
              
             let saved = URL(string: addressText.trimmingCharacters(in: .whitespacesAndNewlines))
+             
+             
+             
             onDone(addressChanged ? saved : nil)
         } catch {
              
